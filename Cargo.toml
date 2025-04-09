@@ -1,0 +1,16 @@
+[package]
+name = "meta_project_cli"
+version = "0.1.0"
+edition = "2021"
+description = "Project management plugin for meta CLI to sync and update project repositories"
+license = "MIT"
+
+[lib]
+name = "meta_project_cli"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+colored = "2"
+meta_plugin_api = { path = "../meta_plugin_api" }
