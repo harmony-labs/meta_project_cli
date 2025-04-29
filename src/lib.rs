@@ -28,13 +28,10 @@ fn find_missing_projects(projects: &HashMap<String, String>, base_dir: &Path) ->
 
 fn print_missing(missing: &[(String, String)]) {
     if !missing.is_empty() {
-        println!("*** the following repositories have been added to .meta but are not currently cloned locally:");
-        println!("*** {{");
         for (name, url) in missing {
-            println!("  {}: '{}'", name, url);
+            meta_git_lib::print_missing_repo(name, url, &std::env::current_dir().unwrap().join(name));
         }
-        println!("*** }}");
-        println!("*** type 'meta project sync' or 'meta project update' to correct.\n");
+        println!();
     }
 }
 
