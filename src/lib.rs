@@ -38,7 +38,7 @@ pub fn execute_command(command: &str, _args: &[String]) -> anyhow::Result<()> {
             for (name, url) in &missing {
                 let target_dir = cwd.join(name);
                 if let Err(e) = meta_git_lib::clone_repo_with_progress(url, &target_dir, None) {
-                    println!("Error cloning {}: {}", name, e);
+                    println!("Error cloning {name}: {e}");
                 }
             }
             Ok(())
@@ -125,11 +125,7 @@ mod tests {
         let original_dir = std::env::current_dir().unwrap();
 
         // Create a .meta file
-        std::fs::write(
-            temp_dir.path().join(".meta"),
-            r#"{"projects": {}}"#,
-        )
-        .unwrap();
+        std::fs::write(temp_dir.path().join(".meta"), r#"{"projects": {}}"#).unwrap();
 
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
