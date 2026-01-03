@@ -2,48 +2,110 @@
 //!
 //! Provides project management commands for meta repositories.
 
+use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-/// Execute a project command
-pub fn execute_command(command: &str, _args: &[String]) -> anyhow::Result<()> {
-    let cwd = std::env::current_dir()?;
+// ============================================================================
+// Execution Plan Types (for subprocess plugin protocol)
+// ============================================================================
+
+/// An execution plan that tells the shim what commands to run via loop_lib
+#[derive(Debug, Serialize)]
+pub struct ExecutionPlan {
+    pub commands: Vec<PlannedCommand>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel: Option<bool>,
+}
+
+/// A single command in an execution plan
+#[derive(Debug, Serialize)]
+pub struct PlannedCommand {
+    pub dir: String,
+    pub cmd: String,
+}
+
+/// Response wrapper for execution plans
+#[derive(Debug, Serialize)]
+pub struct PlanResponse {
+    pub plan: ExecutionPlan,
+}
+
+/// Output an execution plan to stdout for the shim to execute
+pub fn output_execution_plan(commands: Vec<PlannedCommand>, parallel: Option<bool>) {
+    let response = PlanResponse {
+        plan: ExecutionPlan { commands, parallel },
+    };
+    println!("{}", serde_json::to_string(&response).unwrap());
+}
+
+// ============================================================================
+// Command Result Types
+// ============================================================================
+
+/// Result of executing a project command
+pub enum CommandResult {
+    /// A plan of commands to execute via loop_lib
+    Plan(Vec<PlannedCommand>, Option<bool>),
+    /// A message to display (no commands to execute)
+    Message(String),
+    /// An error occurred
+    Error(String),
+}
+
+/// Execute a project command and return the result
+pub fn execute_command(command: &str, _args: &[String], dry_run: bool) -> CommandResult {
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(e) => return CommandResult::Error(format!("Failed to get current directory: {e}")),
+    };
     let meta_path = cwd.join(".meta");
     if !meta_path.exists() {
-        return Err(anyhow::anyhow!("No .meta file found in {}", cwd.display()));
+        return CommandResult::Error(format!("No .meta file found in {}", cwd.display()));
     }
-    let projects = parse_meta_projects(&meta_path)?;
+    let projects = match parse_meta_projects(&meta_path) {
+        Ok(projects) => projects,
+        Err(e) => return CommandResult::Error(format!("Failed to parse .meta: {e}")),
+    };
     let missing = find_missing_projects(&projects, &cwd);
-
-    // Always check and warn, unless we're already running 'project check'
-    if command != "project check" {
-        print_missing(&missing);
-    }
 
     match command {
         "project check" => {
             if missing.is_empty() {
-                println!("All projects are cloned and present.");
+                CommandResult::Message("All projects are cloned and present.".to_string())
             } else {
+                // Print missing repos (uses visual formatting)
                 print_missing(&missing);
+                CommandResult::Message(format!("{} project(s) missing", missing.len()))
             }
-            Ok(())
         }
         "project sync" | "project update" => {
             if missing.is_empty() {
-                println!("All projects are cloned and present. Nothing to do.");
-                return Ok(());
+                return CommandResult::Message(
+                    "All projects are cloned and present. Nothing to do.".to_string(),
+                );
             }
-            for (name, url) in &missing {
-                let target_dir = cwd.join(name);
-                if let Err(e) = meta_git_lib::clone_repo_with_progress(url, &target_dir, None) {
-                    println!("Error cloning {name}: {e}");
-                }
+
+            // Build clone commands for each missing project
+            let commands: Vec<PlannedCommand> = missing
+                .iter()
+                .map(|(name, url)| {
+                    let target_dir = cwd.join(name);
+                    PlannedCommand {
+                        dir: ".".to_string(), // Clone runs in cwd
+                        cmd: format!("git clone {} {}", url, target_dir.display()),
+                    }
+                })
+                .collect();
+
+            if dry_run {
+                // In dry_run mode, output will be shown by loop_lib
             }
-            Ok(())
+
+            CommandResult::Plan(commands, Some(false)) // Sequential cloning
         }
-        _ => Err(anyhow::anyhow!("Unknown command: {}", command)),
+        _ => CommandResult::Error(format!("Unknown command: {}", command)),
     }
 }
 
@@ -111,12 +173,14 @@ mod tests {
 
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
-        let result = execute_command("project check", &[]);
+        let result = execute_command("project check", &[], false);
 
         std::env::set_current_dir(original_dir).unwrap();
 
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No .meta file"));
+        match result {
+            CommandResult::Error(msg) => assert!(msg.contains("No .meta file")),
+            _ => panic!("Expected Error result"),
+        }
     }
 
     #[test]
@@ -129,11 +193,83 @@ mod tests {
 
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
-        let result = execute_command("project unknown", &[]);
+        let result = execute_command("project unknown", &[], false);
 
         std::env::set_current_dir(original_dir).unwrap();
 
-        assert!(result.is_err());
+        match result {
+            CommandResult::Error(msg) => assert!(msg.contains("Unknown command")),
+            _ => panic!("Expected Error result"),
+        }
+    }
+
+    #[test]
+    fn test_project_check_all_present() {
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+
+        // Create a .meta file with no projects
+        std::fs::write(temp_dir.path().join(".meta"), r#"{"projects": {}}"#).unwrap();
+
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        let result = execute_command("project check", &[], false);
+
+        std::env::set_current_dir(original_dir).unwrap();
+
+        match result {
+            CommandResult::Message(msg) => assert!(msg.contains("All projects are cloned")),
+            _ => panic!("Expected Message result"),
+        }
+    }
+
+    #[test]
+    fn test_project_sync_returns_plan_for_missing() {
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+
+        // Create a .meta file with a missing project
+        std::fs::write(
+            temp_dir.path().join(".meta"),
+            r#"{"projects": {"missing-repo": "https://github.com/test/repo.git"}}"#,
+        )
+        .unwrap();
+
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        let result = execute_command("project sync", &[], false);
+
+        std::env::set_current_dir(original_dir).unwrap();
+
+        match result {
+            CommandResult::Plan(commands, parallel) => {
+                assert_eq!(commands.len(), 1);
+                assert!(commands[0].cmd.contains("git clone"));
+                assert!(commands[0].cmd.contains("https://github.com/test/repo.git"));
+                assert_eq!(parallel, Some(false));
+            }
+            _ => panic!("Expected Plan result"),
+        }
+    }
+
+    #[test]
+    fn test_project_sync_nothing_to_do() {
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = std::env::current_dir().unwrap();
+
+        // Create a .meta file with no projects
+        std::fs::write(temp_dir.path().join(".meta"), r#"{"projects": {}}"#).unwrap();
+
+        std::env::set_current_dir(temp_dir.path()).unwrap();
+
+        let result = execute_command("project sync", &[], false);
+
+        std::env::set_current_dir(original_dir).unwrap();
+
+        match result {
+            CommandResult::Message(msg) => assert!(msg.contains("Nothing to do")),
+            _ => panic!("Expected Message result"),
+        }
     }
 
     #[test]
@@ -141,5 +277,24 @@ mod tests {
         let help = get_help_text();
         assert!(help.contains("project check"));
         assert!(help.contains("project sync"));
+    }
+
+    #[test]
+    fn test_execution_plan_serialization() {
+        let commands = vec![
+            PlannedCommand {
+                dir: ".".to_string(),
+                cmd: "git clone https://example.com/repo.git repo".to_string(),
+            },
+        ];
+        let plan = ExecutionPlan {
+            commands,
+            parallel: Some(false),
+        };
+        let response = PlanResponse { plan };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"plan\""));
+        assert!(json.contains("\"commands\""));
+        assert!(json.contains("git clone"));
     }
 }

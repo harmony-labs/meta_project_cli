@@ -49,6 +49,14 @@ struct PluginRequestOptions {
     verbose: bool,
     #[serde(default)]
     parallel: bool,
+    #[serde(default)]
+    dry_run: bool,
+    #[serde(default)]
+    silent: bool,
+    #[serde(default)]
+    include_filters: Option<Vec<String>>,
+    #[serde(default)]
+    exclude_filters: Option<Vec<String>>,
 }
 
 fn main() -> Result<()> {
@@ -98,6 +106,8 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string(&info)?);
         }
         "--meta-plugin-exec" => {
+            use meta_project_cli::{CommandResult, output_execution_plan};
+
             // Read JSON request from stdin
             let mut input = String::new();
             io::stdin().read_to_string(&mut input)?;
@@ -110,11 +120,25 @@ fn main() -> Result<()> {
             }
 
             // Execute the command
-            let result = meta_project_cli::execute_command(&request.command, &request.args);
+            let result = meta_project_cli::execute_command(
+                &request.command,
+                &request.args,
+                request.options.dry_run,
+            );
 
-            if let Err(e) = result {
-                eprintln!("Error: {e}");
-                std::process::exit(1);
+            match result {
+                CommandResult::Plan(commands, parallel) => {
+                    // Output execution plan for the shim to execute via loop_lib
+                    output_execution_plan(commands, parallel);
+                }
+                CommandResult::Message(msg) => {
+                    // Just print the message
+                    println!("{msg}");
+                }
+                CommandResult::Error(msg) => {
+                    eprintln!("Error: {msg}");
+                    std::process::exit(1);
+                }
             }
         }
         "--help" | "-h" => {
