@@ -4,6 +4,7 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::{self, Read};
 
 /// Plugin info returned by --meta-plugin-info
@@ -13,6 +14,16 @@ struct PluginInfo {
     version: String,
     commands: Vec<String>,
     description: Option<String>,
+    help: Option<PluginHelp>,
+}
+
+/// Help information for the plugin
+#[derive(Debug, Serialize)]
+struct PluginHelp {
+    usage: String,
+    commands: HashMap<String, String>,
+    examples: Vec<String>,
+    note: Option<String>,
 }
 
 /// Request received from meta CLI via --meta-plugin-exec
@@ -50,6 +61,20 @@ fn main() -> Result<()> {
 
     match args[1].as_str() {
         "--meta-plugin-info" => {
+            let mut help_commands = HashMap::new();
+            help_commands.insert(
+                "check".to_string(),
+                "Verify project consistency and health".to_string(),
+            );
+            help_commands.insert(
+                "sync".to_string(),
+                "Synchronize project state with .meta config".to_string(),
+            );
+            help_commands.insert(
+                "update".to_string(),
+                "Update project dependencies and configs".to_string(),
+            );
+
             let info = PluginInfo {
                 name: "project".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
@@ -59,6 +84,16 @@ fn main() -> Result<()> {
                     "project update".to_string(),
                 ],
                 description: Some("Project management for meta repositories".to_string()),
+                help: Some(PluginHelp {
+                    usage: "meta project <command> [args...]".to_string(),
+                    commands: help_commands,
+                    examples: vec![
+                        "meta project check".to_string(),
+                        "meta project sync".to_string(),
+                        "meta project update".to_string(),
+                    ],
+                    note: None,
+                }),
             };
             println!("{}", serde_json::to_string(&info)?);
         }
