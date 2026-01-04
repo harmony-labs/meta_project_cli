@@ -55,11 +55,27 @@ pub enum CommandResult {
 }
 
 /// Execute a project command and return the result
-pub fn execute_command(command: &str, _args: &[String], dry_run: bool) -> CommandResult {
+///
+/// If `provided_projects` is not empty, it will be used instead of reading from .meta file.
+/// This allows meta_cli to pass in the full project list when --recursive is used.
+pub fn execute_command(
+    command: &str,
+    _args: &[String],
+    dry_run: bool,
+    provided_projects: &[String],
+) -> CommandResult {
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd,
         Err(e) => return CommandResult::Error(format!("Failed to get current directory: {e}")),
     };
+
+    // If we have provided projects from meta_cli (e.g., when --recursive is used),
+    // we need to check each project directory for missing repos in their .meta files
+    if !provided_projects.is_empty() {
+        return execute_command_recursive(command, dry_run, provided_projects, &cwd);
+    }
+
+    // Fall back to reading the local .meta file
     let meta_path = cwd.join(".meta");
     if !meta_path.exists() {
         return CommandResult::Error(format!("No .meta file found in {}", cwd.display()));
@@ -102,6 +118,83 @@ pub fn execute_command(command: &str, _args: &[String], dry_run: bool) -> Comman
             if dry_run {
                 // In dry_run mode, output will be shown by loop_lib
             }
+
+            CommandResult::Plan(commands, Some(false)) // Sequential cloning
+        }
+        _ => CommandResult::Error(format!("Unknown command: {}", command)),
+    }
+}
+
+/// Execute a project command recursively across provided project directories
+///
+/// This handles the case when --recursive is used. Each project directory may have
+/// its own .meta file with additional projects to check/sync.
+fn execute_command_recursive(
+    command: &str,
+    _dry_run: bool,
+    provided_projects: &[String],
+    cwd: &Path,
+) -> CommandResult {
+    let mut all_missing: Vec<(String, String)> = Vec::new();
+
+    // Check the root .meta file first
+    let root_meta_path = cwd.join(".meta");
+    if root_meta_path.exists() {
+        if let Ok(projects) = parse_meta_projects(&root_meta_path) {
+            let missing = find_missing_projects(&projects, cwd);
+            for (name, url) in missing {
+                all_missing.push((name, url));
+            }
+        }
+    }
+
+    // Check each provided project directory for its own .meta file
+    for project_path in provided_projects {
+        let project_dir = cwd.join(project_path);
+        let nested_meta_path = project_dir.join(".meta");
+        if nested_meta_path.exists() {
+            if let Ok(projects) = parse_meta_projects(&nested_meta_path) {
+                let missing = find_missing_projects(&projects, &project_dir);
+                for (name, url) in missing {
+                    // Use the full path relative to cwd
+                    let full_path = format!("{}/{}", project_path, name);
+                    all_missing.push((full_path, url));
+                }
+            }
+        }
+    }
+
+    match command {
+        "project check" => {
+            if all_missing.is_empty() {
+                CommandResult::Message("All projects are cloned and present.".to_string())
+            } else {
+                // Print all missing repos
+                for (name, url) in &all_missing {
+                    meta_git_lib::print_missing_repo(name, url, &cwd.join(name));
+                }
+                println!();
+                CommandResult::Message(format!("{} project(s) missing", all_missing.len()))
+            }
+        }
+        "project sync" | "project update" => {
+            if all_missing.is_empty() {
+                return CommandResult::Message(
+                    "All projects are cloned and present. Nothing to do.".to_string(),
+                );
+            }
+
+            // Build clone commands for each missing project
+            let commands: Vec<PlannedCommand> = all_missing
+                .iter()
+                .map(|(name, url)| {
+                    let target_dir = cwd.join(name);
+                    PlannedCommand {
+                        dir: ".".to_string(), // Clone runs in cwd
+                        cmd: format!("git clone {} {}", url, target_dir.display()),
+                    }
+                })
+                .collect();
 
             CommandResult::Plan(commands, Some(false)) // Sequential cloning
         }
@@ -173,7 +266,7 @@ mod tests {
 
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
-        let result = execute_command("project check", &[], false);
+        let result = execute_command("project check", &[], false, &[]);
 
         std::env::set_current_dir(original_dir).unwrap();
 
@@ -193,7 +286,7 @@ mod tests {
 
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
-        let result = execute_command("project unknown", &[], false);
+        let result = execute_command("project unknown", &[], false, &[]);
 
         std::env::set_current_dir(original_dir).unwrap();
 
@@ -213,7 +306,7 @@ mod tests {
 
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
-        let result = execute_command("project check", &[], false);
+        let result = execute_command("project check", &[], false, &[]);
 
         std::env::set_current_dir(original_dir).unwrap();
 
@@ -237,7 +330,7 @@ mod tests {
 
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
-        let result = execute_command("project sync", &[], false);
+        let result = execute_command("project sync", &[], false, &[]);
 
         std::env::set_current_dir(original_dir).unwrap();
 
@@ -262,7 +355,7 @@ mod tests {
 
         std::env::set_current_dir(temp_dir.path()).unwrap();
 
-        let result = execute_command("project sync", &[], false);
+        let result = execute_command("project sync", &[], false, &[]);
 
         std::env::set_current_dir(original_dir).unwrap();
 

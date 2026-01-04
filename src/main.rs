@@ -119,11 +119,13 @@ fn main() -> Result<()> {
                 std::env::set_current_dir(&request.cwd)?;
             }
 
-            // Execute the command
+            // Execute the command, passing the projects list from meta_cli
+            // This enables --recursive to work properly (meta_cli discovers nested projects)
             let result = meta_project_cli::execute_command(
                 &request.command,
                 &request.args,
                 request.options.dry_run,
+                &request.projects,
             );
 
             match result {
