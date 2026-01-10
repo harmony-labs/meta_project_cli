@@ -1,9 +1,10 @@
 [package]
 name = "meta_project_cli"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Project management plugin for meta CLI to sync and update project repositories"
-license = "MIT"
 
 [[bin]]
 name = "meta-project"
