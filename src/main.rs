@@ -54,6 +54,10 @@ struct PluginRequestOptions {
     #[serde(default)]
     silent: bool,
     #[serde(default)]
+    recursive: bool,
+    #[serde(default)]
+    depth: Option<usize>,
+    #[serde(default)]
     include_filters: Option<Vec<String>>,
     #[serde(default)]
     exclude_filters: Option<Vec<String>>,
@@ -71,6 +75,10 @@ fn main() -> Result<()> {
         "--meta-plugin-info" => {
             let mut help_commands = HashMap::new();
             help_commands.insert(
+                "list".to_string(),
+                "List all projects defined in .meta (alias: ls)".to_string(),
+            );
+            help_commands.insert(
                 "check".to_string(),
                 "Verify project consistency and health".to_string(),
             );
@@ -87,6 +95,8 @@ fn main() -> Result<()> {
                 name: "project".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 commands: vec![
+                    "project list".to_string(),
+                    "project ls".to_string(),
                     "project check".to_string(),
                     "project sync".to_string(),
                     "project update".to_string(),
@@ -96,9 +106,11 @@ fn main() -> Result<()> {
                     usage: "meta project <command> [args...]".to_string(),
                     commands: help_commands,
                     examples: vec![
+                        "meta project list".to_string(),
+                        "meta project list --json".to_string(),
+                        "meta project list --recursive".to_string(),
                         "meta project check".to_string(),
                         "meta project sync".to_string(),
-                        "meta project update".to_string(),
                     ],
                     note: None,
                 }),
@@ -106,7 +118,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string(&info)?);
         }
         "--meta-plugin-exec" => {
-            use meta_project_cli::{CommandResult, output_execution_plan};
+            use meta_project_cli::{CommandResult, ExecuteOptions, output_execution_plan};
 
             // Read JSON request from stdin
             let mut input = String::new();
@@ -119,12 +131,20 @@ fn main() -> Result<()> {
                 std::env::set_current_dir(&request.cwd)?;
             }
 
+            let options = ExecuteOptions {
+                dry_run: request.options.dry_run,
+                json_output: request.options.json_output,
+                recursive: request.options.recursive,
+                depth: request.options.depth,
+                verbose: request.options.verbose,
+            };
+
             // Execute the command, passing the projects list from meta_cli
             // This enables --recursive to work properly (meta_cli discovers nested projects)
             let result = meta_project_cli::execute_command(
                 &request.command,
                 &request.args,
-                request.options.dry_run,
+                &options,
                 &request.projects,
             );
 
