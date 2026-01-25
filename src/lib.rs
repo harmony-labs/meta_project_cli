@@ -134,7 +134,7 @@ pub fn execute_command(
 
             CommandResult::Plan(commands, Some(false)) // Sequential cloning
         }
-        _ => CommandResult::Error(format!("Unknown command: {}", command)),
+        _ => CommandResult::ShowHelp(Some(format!("unrecognized command '{}'", command))),
     }
 }
 
@@ -211,7 +211,7 @@ fn execute_command_recursive(
 
             CommandResult::Plan(commands, Some(false)) // Sequential cloning
         }
-        _ => CommandResult::Error(format!("Unknown command: {}", command)),
+        _ => CommandResult::ShowHelp(Some(format!("unrecognized command '{}'", command))),
     }
 }
 
@@ -412,8 +412,8 @@ mod tests {
         std::env::set_current_dir(original_dir).unwrap();
 
         match result {
-            CommandResult::Error(msg) => assert!(msg.contains("Unknown command")),
-            _ => panic!("Expected Error result"),
+            CommandResult::ShowHelp(Some(msg)) => assert!(msg.contains("unrecognized command")),
+            _ => panic!("Expected ShowHelp result"),
         }
     }
 
