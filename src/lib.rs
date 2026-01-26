@@ -60,12 +60,8 @@ pub fn execute_command(
     args: &[String],
     options: &ExecuteOptions,
     provided_projects: &[String],
+    cwd: &Path,
 ) -> CommandResult {
-    let cwd = match std::env::current_dir() {
-        Ok(cwd) => cwd,
-        Err(e) => return CommandResult::Error(format!("Failed to get current directory: {e}")),
-    };
-
     // project list/ls handles its own config discovery
     if command == "project list" || command == "project ls" {
         // Check if --json was passed as a trailing arg (not extracted by meta_cli
@@ -105,7 +101,7 @@ pub fn execute_command(
                 CommandResult::Message("All projects are cloned and present.".to_string())
             } else {
                 // Print missing repos (uses visual formatting)
-                print_missing(&missing);
+                print_missing(&missing, cwd);
                 CommandResult::Message(format!("{} project(s) missing", missing.len()))
             }
         }
@@ -360,13 +356,13 @@ fn find_missing_projects(
         .collect()
 }
 
-fn print_missing(missing: &[(String, String)]) {
+fn print_missing(missing: &[(String, String)], cwd: &Path) {
     if !missing.is_empty() {
         for (name, url) in missing {
             meta_git_lib::print_missing_repo(
                 name,
                 url,
-                &std::env::current_dir().unwrap().join(name),
+                &cwd.join(name),
             );
         }
         println!();
@@ -381,14 +377,9 @@ mod tests {
     #[test]
     fn test_execute_command_no_meta_file() {
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
-
-        std::env::set_current_dir(temp_dir.path()).unwrap();
 
         let options = ExecuteOptions::default();
-        let result = execute_command("project check", &[], &options, &[]);
-
-        std::env::set_current_dir(original_dir).unwrap();
+        let result = execute_command("project check", &[], &options, &[], temp_dir.path());
 
         match result {
             CommandResult::Error(msg) => assert!(msg.contains("No .meta file")),
@@ -399,17 +390,12 @@ mod tests {
     #[test]
     fn test_unknown_command() {
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
 
         // Create a .meta file
         std::fs::write(temp_dir.path().join(".meta"), r#"{"projects": {}}"#).unwrap();
 
-        std::env::set_current_dir(temp_dir.path()).unwrap();
-
         let options = ExecuteOptions::default();
-        let result = execute_command("project unknown", &[], &options, &[]);
-
-        std::env::set_current_dir(original_dir).unwrap();
+        let result = execute_command("project unknown", &[], &options, &[], temp_dir.path());
 
         match result {
             CommandResult::ShowHelp(Some(msg)) => assert!(msg.contains("unrecognized command")),
@@ -420,17 +406,12 @@ mod tests {
     #[test]
     fn test_project_check_all_present() {
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
 
         // Create a .meta file with no projects
         std::fs::write(temp_dir.path().join(".meta"), r#"{"projects": {}}"#).unwrap();
 
-        std::env::set_current_dir(temp_dir.path()).unwrap();
-
         let options = ExecuteOptions::default();
-        let result = execute_command("project check", &[], &options, &[]);
-
-        std::env::set_current_dir(original_dir).unwrap();
+        let result = execute_command("project check", &[], &options, &[], temp_dir.path());
 
         match result {
             CommandResult::Message(msg) => assert!(msg.contains("All projects are cloned")),
@@ -441,7 +422,6 @@ mod tests {
     #[test]
     fn test_project_sync_returns_plan_for_missing() {
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
 
         // Create a .meta file with a missing project
         std::fs::write(
@@ -450,12 +430,8 @@ mod tests {
         )
         .unwrap();
 
-        std::env::set_current_dir(temp_dir.path()).unwrap();
-
         let options = ExecuteOptions::default();
-        let result = execute_command("project sync", &[], &options, &[]);
-
-        std::env::set_current_dir(original_dir).unwrap();
+        let result = execute_command("project sync", &[], &options, &[], temp_dir.path());
 
         match result {
             CommandResult::Plan(commands, parallel) => {
@@ -471,17 +447,12 @@ mod tests {
     #[test]
     fn test_project_sync_nothing_to_do() {
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
 
         // Create a .meta file with no projects
         std::fs::write(temp_dir.path().join(".meta"), r#"{"projects": {}}"#).unwrap();
 
-        std::env::set_current_dir(temp_dir.path()).unwrap();
-
         let options = ExecuteOptions::default();
-        let result = execute_command("project sync", &[], &options, &[]);
-
-        std::env::set_current_dir(original_dir).unwrap();
+        let result = execute_command("project sync", &[], &options, &[], temp_dir.path());
 
         match result {
             CommandResult::Message(msg) => assert!(msg.contains("Nothing to do")),
@@ -517,7 +488,6 @@ mod tests {
     #[test]
     fn test_project_list_basic() {
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
 
         // Create a .meta file with projects
         std::fs::write(
@@ -526,12 +496,8 @@ mod tests {
         )
         .unwrap();
 
-        std::env::set_current_dir(temp_dir.path()).unwrap();
-
         let options = ExecuteOptions::default();
-        let result = execute_command("project list", &[], &options, &[]);
-
-        std::env::set_current_dir(original_dir).unwrap();
+        let result = execute_command("project list", &[], &options, &[], temp_dir.path());
 
         match result {
             CommandResult::Message(msg) => {
@@ -546,7 +512,6 @@ mod tests {
     #[test]
     fn test_project_list_json() {
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
 
         std::fs::write(
             temp_dir.path().join(".meta"),
@@ -554,15 +519,11 @@ mod tests {
         )
         .unwrap();
 
-        std::env::set_current_dir(temp_dir.path()).unwrap();
-
         let options = ExecuteOptions {
             json_output: true,
             ..Default::default()
         };
-        let result = execute_command("project list", &[], &options, &[]);
-
-        std::env::set_current_dir(original_dir).unwrap();
+        let result = execute_command("project list", &[], &options, &[], temp_dir.path());
 
         match result {
             CommandResult::Message(msg) => {
@@ -581,7 +542,6 @@ mod tests {
     #[test]
     fn test_project_ls_alias() {
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
 
         std::fs::write(
             temp_dir.path().join(".meta"),
@@ -589,12 +549,8 @@ mod tests {
         )
         .unwrap();
 
-        std::env::set_current_dir(temp_dir.path()).unwrap();
-
         let options = ExecuteOptions::default();
-        let result = execute_command("project ls", &[], &options, &[]);
-
-        std::env::set_current_dir(original_dir).unwrap();
+        let result = execute_command("project ls", &[], &options, &[], temp_dir.path());
 
         match result {
             CommandResult::Message(msg) => {
@@ -607,7 +563,6 @@ mod tests {
     #[test]
     fn test_project_list_recursive() {
         let temp_dir = TempDir::new().unwrap();
-        let original_dir = std::env::current_dir().unwrap();
 
         // Create root .meta
         std::fs::write(
@@ -625,16 +580,12 @@ mod tests {
         )
         .unwrap();
 
-        std::env::set_current_dir(temp_dir.path()).unwrap();
-
         let options = ExecuteOptions {
             recursive: true,
             json_output: true,
             ..Default::default()
         };
-        let result = execute_command("project list", &[], &options, &[]);
-
-        std::env::set_current_dir(original_dir).unwrap();
+        let result = execute_command("project list", &[], &options, &[], temp_dir.path());
 
         match result {
             CommandResult::Message(msg) => {
