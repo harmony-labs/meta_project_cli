@@ -125,6 +125,7 @@ pub fn execute_command(
                     PlannedCommand {
                         dir: ".".to_string(), // Clone runs in cwd
                         cmd: format!("git clone {} {}", url, target_dir.display()),
+                        env: None,
                     }
                 })
                 .collect();
@@ -206,6 +207,7 @@ fn execute_command_recursive(
                     PlannedCommand {
                         dir: ".".to_string(), // Clone runs in cwd
                         cmd: format!("git clone {} {}", url, target_dir.display()),
+                        env: None,
                     }
                 })
                 .collect();
@@ -472,6 +474,7 @@ mod tests {
         let commands = vec![PlannedCommand {
             dir: ".".to_string(),
             cmd: "git clone https://example.com/repo.git repo".to_string(),
+            env: None,
         }];
         let plan = ExecutionPlan {
             commands,
