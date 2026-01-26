@@ -62,6 +62,11 @@ pub fn execute_command(
     provided_projects: &[String],
     cwd: &Path,
 ) -> CommandResult {
+    // Intercept --help/-h before dispatching to subcommand handlers
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        return CommandResult::ShowHelp(None);
+    }
+
     // project list/ls handles its own config discovery
     if command == "project list" || command == "project ls" {
         // Check if --json was passed as a trailing arg (not extracted by meta_cli
