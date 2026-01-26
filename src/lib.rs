@@ -331,16 +331,10 @@ This plugin helps manage multi-repository workspaces defined in .meta files.
 }
 
 fn parse_meta_projects(meta_path: &Path) -> anyhow::Result<HashMap<String, String>> {
-    let config_str = std::fs::read_to_string(meta_path)?;
-    let meta_config: serde_json::Value = serde_json::from_str(&config_str)?;
-    let projects = meta_config["projects"]
-        .as_object()
-        .ok_or_else(|| anyhow::anyhow!("No 'projects' key in .meta"))?;
+    let (projects, _ignore) = config::parse_meta_config(meta_path)?;
     let mut map = HashMap::new();
-    for (name, url) in projects.iter() {
-        if let Some(url_str) = url.as_str() {
-            map.insert(name.clone(), url_str.to_string());
-        }
+    for p in projects {
+        map.insert(p.path.clone(), p.repo.clone());
     }
     Ok(map)
 }
