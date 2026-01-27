@@ -89,14 +89,13 @@ pub fn execute_command(
         return execute_command_recursive(command, options.dry_run, provided_projects, &cwd);
     }
 
-    // Fall back to reading the local .meta file
-    let meta_path = cwd.join(".meta");
-    if !meta_path.exists() {
-        return CommandResult::Error(format!("No .meta file found in {}", cwd.display()));
-    }
+    // Fall back to reading the local meta config
+    let Some((meta_path, _format)) = config::find_meta_config_in(cwd) else {
+        return CommandResult::Error(format!("No .meta config found in {}", cwd.display()));
+    };
     let projects = match parse_meta_projects(&meta_path) {
         Ok(projects) => projects,
-        Err(e) => return CommandResult::Error(format!("Failed to parse .meta: {e}")),
+        Err(e) => return CommandResult::Error(format!("Failed to parse meta config: {e}")),
     };
     let missing = find_missing_projects(&projects, &cwd);
 
@@ -152,9 +151,8 @@ fn execute_command_recursive(
 ) -> CommandResult {
     let mut all_missing: Vec<(String, String)> = Vec::new();
 
-    // Check the root .meta file first
-    let root_meta_path = cwd.join(".meta");
-    if root_meta_path.exists() {
+    // Check the root meta config first
+    if let Some((root_meta_path, _format)) = config::find_meta_config_in(cwd) {
         if let Ok(projects) = parse_meta_projects(&root_meta_path) {
             let missing = find_missing_projects(&projects, cwd);
             for (name, url) in missing {
@@ -163,11 +161,10 @@ fn execute_command_recursive(
         }
     }
 
-    // Check each provided project directory for its own .meta file
+    // Check each provided project directory for its own meta config
     for project_path in provided_projects {
         let project_dir = cwd.join(project_path);
-        let nested_meta_path = project_dir.join(".meta");
-        if nested_meta_path.exists() {
+        if let Some((nested_meta_path, _format)) = config::find_meta_config_in(&project_dir) {
             if let Ok(projects) = parse_meta_projects(&nested_meta_path) {
                 let missing = find_missing_projects(&projects, &project_dir);
                 for (name, url) in missing {
@@ -383,7 +380,7 @@ mod tests {
         let result = execute_command("project check", &[], &options, &[], temp_dir.path());
 
         match result {
-            CommandResult::Error(msg) => assert!(msg.contains("No .meta file")),
+            CommandResult::Error(msg) => assert!(msg.contains("No .meta config")),
             _ => panic!("Expected Error result"),
         }
     }
