@@ -475,7 +475,9 @@ mod tests {
             env: None,
         }];
         let plan = ExecutionPlan {
+            pre_commands: vec![],
             commands,
+            post_commands: vec![],
             parallel: Some(false),
         };
         let response = PlanResponse { plan };
