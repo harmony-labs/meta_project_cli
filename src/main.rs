@@ -70,6 +70,7 @@ fn execute(request: PluginRequest) -> CommandResult {
         recursive: request.options.recursive,
         depth: request.options.depth,
         verbose: request.options.verbose,
+        parallel: request.options.parallel,
     };
 
     meta_project_cli::execute_command(

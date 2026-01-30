@@ -20,6 +20,7 @@ pub struct ExecuteOptions {
     pub recursive: bool,
     pub depth: Option<usize>,
     pub verbose: bool,
+    pub parallel: bool,
 }
 
 // ============================================================================
@@ -86,7 +87,7 @@ pub fn execute_command(
     // If we have provided projects from meta_cli (e.g., when --recursive is used),
     // we need to check each project directory for missing repos in their .meta files
     if !provided_projects.is_empty() {
-        return execute_command_recursive(command, options.dry_run, provided_projects, &cwd);
+        return execute_command_recursive(command, options, provided_projects, &cwd);
     }
 
     // Fall back to reading the local meta config
@@ -133,7 +134,7 @@ pub fn execute_command(
                 // In dry_run mode, output will be shown by loop_lib
             }
 
-            CommandResult::Plan(commands, Some(false)) // Sequential cloning
+            CommandResult::Plan(commands, Some(options.parallel))
         }
         _ => CommandResult::ShowHelp(Some(format!("unrecognized command '{}'", command))),
     }
@@ -145,7 +146,7 @@ pub fn execute_command(
 /// its own .meta file with additional projects to check/sync.
 fn execute_command_recursive(
     command: &str,
-    _dry_run: bool,
+    options: &ExecuteOptions,
     provided_projects: &[String],
     cwd: &Path,
 ) -> CommandResult {
@@ -209,7 +210,7 @@ fn execute_command_recursive(
                 })
                 .collect();
 
-            CommandResult::Plan(commands, Some(false)) // Sequential cloning
+            CommandResult::Plan(commands, Some(options.parallel))
         }
         _ => CommandResult::ShowHelp(Some(format!("unrecognized command '{}'", command))),
     }
