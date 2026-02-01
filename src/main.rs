@@ -1,7 +1,7 @@
 //! meta-project subprocess plugin
 
 use meta_plugin_protocol::{
-    CommandResult, PluginDefinition, PluginHelp, PluginInfo, PluginRequest, run_plugin,
+    run_plugin, CommandResult, PluginDefinition, PluginHelp, PluginInfo, PluginRequest,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -50,7 +50,7 @@ fn main() {
                 note: None,
             }),
         },
-        execute: execute,
+        execute,
     });
 }
 

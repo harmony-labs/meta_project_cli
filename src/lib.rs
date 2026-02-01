@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::Command;
 
 pub use meta_plugin_protocol::{
-    CommandResult, ExecutionPlan, PlannedCommand, PlanResponse, output_execution_plan,
+    output_execution_plan, CommandResult, ExecutionPlan, PlanResponse, PlannedCommand,
 };
 
 /// Options passed to execute_command
@@ -81,13 +81,13 @@ pub fn execute_command(
         } else {
             ExecuteOptions { ..*options }
         };
-        return handle_project_list(&cwd, &effective_options);
+        return handle_project_list(cwd, &effective_options);
     }
 
     // If we have provided projects from meta_cli (e.g., when --recursive is used),
     // we need to check each project directory for missing repos in their .meta files
     if !provided_projects.is_empty() {
-        return execute_command_recursive(command, options, provided_projects, &cwd);
+        return execute_command_recursive(command, options, provided_projects, cwd);
     }
 
     // Fall back to reading the local meta config
@@ -98,7 +98,7 @@ pub fn execute_command(
         Ok(projects) => projects,
         Err(e) => return CommandResult::Error(format!("Failed to parse meta config: {e}")),
     };
-    let missing = find_missing_projects(&projects, &cwd);
+    let missing = find_missing_projects(&projects, cwd);
 
     match command {
         "project check" => {
@@ -136,7 +136,7 @@ pub fn execute_command(
 
             CommandResult::Plan(commands, Some(options.parallel))
         }
-        _ => CommandResult::ShowHelp(Some(format!("unrecognized command '{}'", command))),
+        _ => CommandResult::ShowHelp(Some(format!("unrecognized command '{command}'"))),
     }
 }
 
@@ -170,7 +170,7 @@ fn execute_command_recursive(
                 let missing = find_missing_projects(&projects, &project_dir);
                 for (name, url) in missing {
                     // Use the full path relative to cwd
-                    let full_path = format!("{}/{}", project_path, name);
+                    let full_path = format!("{project_path}/{name}");
                     all_missing.push((full_path, url));
                 }
             }
@@ -212,7 +212,7 @@ fn execute_command_recursive(
 
             CommandResult::Plan(commands, Some(options.parallel))
         }
-        _ => CommandResult::ShowHelp(Some(format!("unrecognized command '{}'", command))),
+        _ => CommandResult::ShowHelp(Some(format!("unrecognized command '{command}'"))),
     }
 }
 
@@ -222,7 +222,11 @@ fn execute_command_recursive(
 
 /// Handle `meta project list` / `meta project ls`
 fn handle_project_list(cwd: &Path, options: &ExecuteOptions) -> CommandResult {
-    let max_depth = if options.recursive { options.depth } else { Some(0) };
+    let max_depth = if options.recursive {
+        options.depth
+    } else {
+        Some(0)
+    };
 
     let tree = match config::walk_meta_tree(cwd, max_depth) {
         Ok(t) => t,
@@ -245,7 +249,7 @@ fn handle_project_list(cwd: &Path, options: &ExecuteOptions) -> CommandResult {
         CommandResult::Message(json)
     } else {
         let mut output = String::new();
-        output.push_str(&format!(". ({})\n", root_repo));
+        output.push_str(&format!(". ({root_repo})\n"));
         format_project_tree(&project_nodes, &mut output, "");
         if output.ends_with('\n') {
             output.pop();
@@ -303,9 +307,9 @@ fn format_project_tree(nodes: &[ProjectTreeNode], output: &mut String, prefix: &
 
         if !node.projects.is_empty() {
             let child_prefix = if is_last {
-                format!("{}    ", prefix)
+                format!("{prefix}    ")
             } else {
-                format!("{}\u{2502}   ", prefix)
+                format!("{prefix}\u{2502}   ")
             };
             format_project_tree(&node.projects, output, &child_prefix);
         }
@@ -358,11 +362,7 @@ fn find_missing_projects(
 fn print_missing(missing: &[(String, String)], cwd: &Path) {
     if !missing.is_empty() {
         for (name, url) in missing {
-            meta_git_lib::print_missing_repo(
-                name,
-                url,
-                &cwd.join(name),
-            );
+            meta_git_lib::print_missing_repo(name, url, &cwd.join(name));
         }
         println!();
     }
