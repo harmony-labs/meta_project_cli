@@ -32,7 +32,9 @@ pub struct ExecuteOptions {
 pub struct ProjectTreeNode {
     pub name: String,
     pub path: String,
-    pub repo: String,
+    /// Git remote URL. Should be present for all normal projects.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     pub is_meta: bool,
@@ -343,7 +345,10 @@ fn parse_meta_projects(meta_path: &Path) -> anyhow::Result<HashMap<String, Strin
     let (projects, _ignore) = config::parse_meta_config(meta_path)?;
     let mut map = HashMap::new();
     for p in projects {
-        map.insert(p.path.clone(), p.repo.clone());
+        // Skip projects without a repo URL (cannot clone)
+        if let Some(repo) = p.repo {
+            map.insert(p.path.clone(), repo);
+        }
     }
     Ok(map)
 }
@@ -611,7 +616,7 @@ mod tests {
             ProjectTreeNode {
                 name: "api".to_string(),
                 path: "services/api".to_string(),
-                repo: "git@github.com:org/api.git".to_string(),
+                repo: Some("git@github.com:org/api.git".to_string()),
                 tags: vec!["backend".to_string()],
                 is_meta: false,
                 projects: vec![],
@@ -619,7 +624,7 @@ mod tests {
             ProjectTreeNode {
                 name: "frontend".to_string(),
                 path: "frontend".to_string(),
-                repo: "git@github.com:org/frontend.git".to_string(),
+                repo: Some("git@github.com:org/frontend.git".to_string()),
                 tags: vec![],
                 is_meta: false,
                 projects: vec![],
