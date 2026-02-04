@@ -109,36 +109,15 @@ pub fn execute_command(
             } else {
                 // Print missing repos (uses visual formatting)
                 print_missing(&missing, cwd);
-                CommandResult::Message(format!("{} project(s) missing", missing.len()))
+                CommandResult::Message(format!(
+                    "{} project(s) missing. Run 'meta git update' to clone them.",
+                    missing.len()
+                ))
             }
         }
-        "project sync" | "project update" => {
-            if missing.is_empty() {
-                return CommandResult::Message(
-                    "All projects are cloned and present. Nothing to do.".to_string(),
-                );
-            }
-
-            // Build clone commands for each missing project
-            let commands: Vec<PlannedCommand> = missing
-                .iter()
-                .map(|(name, url)| {
-                    let target_dir = cwd.join(name);
-                    PlannedCommand {
-                        dir: ".".to_string(), // Clone runs in cwd
-                        cmd: format!("git clone {} {}", url, target_dir.display()),
-                        env: None,
-                    }
-                })
-                .collect();
-
-            if options.dry_run {
-                // In dry_run mode, output will be shown by loop_lib
-            }
-
-            CommandResult::Plan(commands, Some(options.parallel))
-        }
-        _ => CommandResult::ShowHelp(Some(format!("unrecognized command '{command}'"))),
+        _ => CommandResult::ShowHelp(Some(format!(
+            "unrecognized command '{command}'. Use 'meta git update' to sync projects."
+        ))),
     }
 }
 
@@ -148,7 +127,7 @@ pub fn execute_command(
 /// its own .meta file with additional projects to check/sync.
 fn execute_command_recursive(
     command: &str,
-    options: &ExecuteOptions,
+    _options: &ExecuteOptions,
     provided_projects: &[String],
     cwd: &Path,
 ) -> CommandResult {
@@ -189,32 +168,15 @@ fn execute_command_recursive(
                     meta_git_lib::print_missing_repo(name, url, &cwd.join(name));
                 }
                 println!();
-                CommandResult::Message(format!("{} project(s) missing", all_missing.len()))
+                CommandResult::Message(format!(
+                    "{} project(s) missing. Run 'meta git update' to clone them.",
+                    all_missing.len()
+                ))
             }
         }
-        "project sync" | "project update" => {
-            if all_missing.is_empty() {
-                return CommandResult::Message(
-                    "All projects are cloned and present. Nothing to do.".to_string(),
-                );
-            }
-
-            // Build clone commands for each missing project
-            let commands: Vec<PlannedCommand> = all_missing
-                .iter()
-                .map(|(name, url)| {
-                    let target_dir = cwd.join(name);
-                    PlannedCommand {
-                        dir: ".".to_string(), // Clone runs in cwd
-                        cmd: format!("git clone {} {}", url, target_dir.display()),
-                        env: None,
-                    }
-                })
-                .collect();
-
-            CommandResult::Plan(commands, Some(options.parallel))
-        }
-        _ => CommandResult::ShowHelp(Some(format!("unrecognized command '{command}'"))),
+        _ => CommandResult::ShowHelp(Some(format!(
+            "unrecognized command '{command}'. Use 'meta git update' to sync projects."
+        ))),
     }
 }
 
@@ -324,20 +286,18 @@ fn format_project_tree(nodes: &[ProjectTreeNode], output: &mut String, prefix: &
 
 /// Get help text for the plugin
 pub fn get_help_text() -> &'static str {
-    r#"meta project - Project Management Plugin
+    r#"meta project - Project Inspection Plugin
 
 Commands:
   meta project list    List all projects defined in .meta (alias: ls)
   meta project check   Check if all projects in .meta are cloned locally
-  meta project sync    Clone any missing projects from .meta
-  meta project update  Alias for 'project sync'
 
 Options for list:
   --json               Output as JSON
   --recursive, -r      Include nested meta repo children
   --depth N            Maximum recursion depth (default: unlimited)
 
-This plugin helps manage multi-repository workspaces defined in .meta files.
+To clone missing projects, use: meta git update
 "#
 }
 
@@ -424,10 +384,10 @@ mod tests {
     }
 
     #[test]
-    fn test_project_sync_returns_plan_for_missing() {
+    fn test_project_sync_removed() {
         let temp_dir = TempDir::new().unwrap();
 
-        // Create a .meta file with a missing project
+        // Create a .meta file
         std::fs::write(
             temp_dir.path().join(".meta"),
             r#"{"projects": {"missing-repo": "https://github.com/test/repo.git"}}"#,
@@ -437,30 +397,12 @@ mod tests {
         let options = ExecuteOptions::default();
         let result = execute_command("project sync", &[], &options, &[], temp_dir.path());
 
+        // sync command should now return an error directing users to meta git update
         match result {
-            CommandResult::Plan(commands, parallel) => {
-                assert_eq!(commands.len(), 1);
-                assert!(commands[0].cmd.contains("git clone"));
-                assert!(commands[0].cmd.contains("https://github.com/test/repo.git"));
-                assert_eq!(parallel, Some(false));
+            CommandResult::ShowHelp(Some(msg)) => {
+                assert!(msg.contains("meta git update"));
             }
-            _ => panic!("Expected Plan result"),
-        }
-    }
-
-    #[test]
-    fn test_project_sync_nothing_to_do() {
-        let temp_dir = TempDir::new().unwrap();
-
-        // Create a .meta file with no projects
-        std::fs::write(temp_dir.path().join(".meta"), r#"{"projects": {}}"#).unwrap();
-
-        let options = ExecuteOptions::default();
-        let result = execute_command("project sync", &[], &options, &[], temp_dir.path());
-
-        match result {
-            CommandResult::Message(msg) => assert!(msg.contains("Nothing to do")),
-            _ => panic!("Expected Message result"),
+            _ => panic!("Expected ShowHelp result directing to meta git update"),
         }
     }
 
@@ -468,8 +410,9 @@ mod tests {
     fn test_get_help_text() {
         let help = get_help_text();
         assert!(help.contains("project check"));
-        assert!(help.contains("project sync"));
         assert!(help.contains("project list"));
+        assert!(help.contains("meta git update")); // Points to the right command
+        assert!(!help.contains("project sync")); // sync is removed
     }
 
     #[test]
