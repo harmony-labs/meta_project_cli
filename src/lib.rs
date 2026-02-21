@@ -47,6 +47,7 @@ pub struct ProjectTreeNode {
 pub struct ProjectListOutput {
     pub path: String,
     pub repo: String,
+    pub cwd: String,
     pub projects: Vec<ProjectTreeNode>,
 }
 
@@ -192,18 +193,45 @@ fn handle_project_list(cwd: &Path, options: &ExecuteOptions) -> CommandResult {
         Some(0)
     };
 
-    let tree = match config::walk_meta_tree(cwd, max_depth) {
+    // When recursive, walk up to the root ancestor meta-repo
+    let start_dir = if options.recursive {
+        match config::find_meta_config(cwd, None) {
+            Some((config_path, _)) => {
+                let nearest_meta_dir = config_path
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .to_path_buf();
+                config::find_root_meta_dir(&nearest_meta_dir)
+            }
+            None => {
+                return CommandResult::Error(format!(
+                    "No .meta config found in {}",
+                    cwd.display()
+                ))
+            }
+        }
+    } else {
+        cwd.to_path_buf()
+    };
+
+    let tree = match config::walk_meta_tree(&start_dir, max_depth) {
         Ok(t) => t,
         Err(e) => return CommandResult::Error(format!("{e}")),
     };
 
-    let root_repo = get_git_remote_url(cwd).unwrap_or_default();
+    let root_repo = get_git_remote_url(&start_dir).unwrap_or_default();
     let project_nodes: Vec<ProjectTreeNode> = tree.iter().map(to_project_tree_node).collect();
+    let abs_cwd = cwd
+        .canonicalize()
+        .unwrap_or_else(|_| cwd.to_path_buf())
+        .to_string_lossy()
+        .to_string();
 
     if options.json_output {
         let output = ProjectListOutput {
             path: ".".to_string(),
             repo: root_repo,
+            cwd: abs_cwd,
             projects: project_nodes,
         };
         let json = match serde_json::to_string_pretty(&output) {
@@ -585,5 +613,124 @@ mod tests {
         assert!(output.contains("\u{2514}\u{2500}\u{2500}"));
         // Non-last item uses ├──
         assert!(output.contains("\u{251c}\u{2500}\u{2500}"));
+    }
+
+    #[test]
+    fn test_project_list_json_includes_cwd() {
+        let temp_dir = TempDir::new().unwrap();
+
+        std::fs::write(
+            temp_dir.path().join(".meta"),
+            r#"{"projects": {"repo1": "git@github.com:org/repo1.git"}}"#,
+        )
+        .unwrap();
+
+        let options = ExecuteOptions {
+            json_output: true,
+            ..Default::default()
+        };
+        let result = execute_command("project list", &[], &options, &[], temp_dir.path());
+
+        match result {
+            CommandResult::Message(msg) => {
+                let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+                // cwd field should be present and be an absolute path
+                let cwd = parsed["cwd"].as_str().expect("cwd field should be a string");
+                assert!(
+                    std::path::Path::new(cwd).is_absolute(),
+                    "cwd should be absolute, got: {cwd}"
+                );
+            }
+            _ => panic!("Expected Message result"),
+        }
+    }
+
+    #[test]
+    fn test_project_list_recursive_from_nested() {
+        // root has child, child has grandchild
+        // Running recursive from child should show root's tree
+        let temp_dir = TempDir::new().unwrap();
+        let child = temp_dir.path().join("child");
+        let grandchild = child.join("grandchild");
+        std::fs::create_dir_all(&grandchild).unwrap();
+
+        // Root .meta
+        std::fs::write(
+            temp_dir.path().join(".meta"),
+            r#"{"projects": {"child": {"repo": "git@github.com:org/child.git", "meta": true}}}"#,
+        )
+        .unwrap();
+
+        // Child .meta
+        std::fs::write(
+            child.join(".meta"),
+            r#"{"projects": {"grandchild": "git@github.com:org/grandchild.git"}}"#,
+        )
+        .unwrap();
+
+        let options = ExecuteOptions {
+            recursive: true,
+            json_output: true,
+            ..Default::default()
+        };
+        // Run from child directory
+        let result = execute_command("project list", &[], &options, &[], &child);
+
+        match result {
+            CommandResult::Message(msg) => {
+                let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+                // Should show root's projects (child), not child's projects (grandchild) at top level
+                let projects = parsed["projects"].as_array().unwrap();
+                assert_eq!(projects.len(), 1);
+                assert_eq!(projects[0]["name"], "child");
+                // And child should have grandchild as nested
+                let sub_projects = projects[0]["projects"].as_array().unwrap();
+                assert_eq!(sub_projects.len(), 1);
+                assert_eq!(sub_projects[0]["name"], "grandchild");
+            }
+            _ => panic!("Expected Message result"),
+        }
+    }
+
+    #[test]
+    fn test_project_list_non_recursive_stays_local() {
+        // Running non-recursive from child should only show child's projects
+        let temp_dir = TempDir::new().unwrap();
+        let child = temp_dir.path().join("child");
+        let grandchild = child.join("grandchild");
+        std::fs::create_dir_all(&grandchild).unwrap();
+
+        // Root .meta
+        std::fs::write(
+            temp_dir.path().join(".meta"),
+            r#"{"projects": {"child": {"repo": "git@github.com:org/child.git", "meta": true}}}"#,
+        )
+        .unwrap();
+
+        // Child .meta
+        std::fs::write(
+            child.join(".meta"),
+            r#"{"projects": {"grandchild": "git@github.com:org/grandchild.git"}}"#,
+        )
+        .unwrap();
+
+        let options = ExecuteOptions {
+            recursive: false,
+            json_output: true,
+            ..Default::default()
+        };
+        // Run from child directory (non-recursive)
+        let result = execute_command("project list", &[], &options, &[], &child);
+
+        match result {
+            CommandResult::Message(msg) => {
+                let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+                // Should show child's projects only (grandchild)
+                let projects = parsed["projects"].as_array().unwrap();
+                assert_eq!(projects.len(), 1);
+                assert_eq!(projects[0]["name"], "grandchild");
+            }
+            _ => panic!("Expected Message result"),
+        }
     }
 }
