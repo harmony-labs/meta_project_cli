@@ -204,10 +204,7 @@ fn handle_project_list(cwd: &Path, options: &ExecuteOptions) -> CommandResult {
                 config::find_root_meta_dir(&nearest_meta_dir)
             }
             None => {
-                return CommandResult::Error(format!(
-                    "No .meta config found in {}",
-                    cwd.display()
-                ))
+                return CommandResult::Error(format!("No .meta config found in {}", cwd.display()))
             }
         }
     } else {
@@ -635,7 +632,9 @@ mod tests {
             CommandResult::Message(msg) => {
                 let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
                 // cwd field should be present and be an absolute path
-                let cwd = parsed["cwd"].as_str().expect("cwd field should be a string");
+                let cwd = parsed["cwd"]
+                    .as_str()
+                    .expect("cwd field should be a string");
                 assert!(
                     std::path::Path::new(cwd).is_absolute(),
                     "cwd should be absolute, got: {cwd}"
