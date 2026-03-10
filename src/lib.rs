@@ -704,7 +704,9 @@ mod tests {
         match result {
             CommandResult::Message(msg) => {
                 let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
-                let cwd = parsed["cwd"].as_str().expect("cwd field should be a string");
+                let cwd = parsed["cwd"]
+                    .as_str()
+                    .expect("cwd field should be a string");
                 let root = parsed["root"]
                     .as_str()
                     .expect("root field should be a string");
