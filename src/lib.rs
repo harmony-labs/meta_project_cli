@@ -226,9 +226,24 @@ fn handle_project_list(cwd: &Path, options: &ExecuteOptions) -> CommandResult {
         .to_string();
 
     if options.json_output {
-        let abs_root = start_dir
+        // `root` = the .meta config directory relevant to this invocation:
+        //   - recursive: the outermost workspace root (same as start_dir)
+        //   - non-recursive: the nearest ancestor .meta config dir
+        // In both cases start_dir is wrong for non-recursive (it equals cwd).
+        let root_dir = if options.recursive {
+            start_dir.clone()
+        } else {
+            match config::find_meta_config(cwd, None) {
+                Some((config_path, _)) => config_path
+                    .parent()
+                    .unwrap_or(cwd)
+                    .to_path_buf(),
+                None => start_dir.clone(),
+            }
+        };
+        let abs_root = root_dir
             .canonicalize()
-            .unwrap_or_else(|_| start_dir.clone())
+            .unwrap_or_else(|_| root_dir)
             .to_string_lossy()
             .to_string();
         let output = ProjectListOutput {
