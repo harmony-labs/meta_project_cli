@@ -658,6 +658,65 @@ mod tests {
                     std::path::Path::new(cwd).is_absolute(),
                     "cwd should be absolute, got: {cwd}"
                 );
+                // root field should be present and be an absolute path
+                let root = parsed["root"]
+                    .as_str()
+                    .expect("root field should be a string");
+                assert!(
+                    std::path::Path::new(root).is_absolute(),
+                    "root should be absolute, got: {root}"
+                );
+            }
+            _ => panic!("Expected Message result"),
+        }
+    }
+
+    #[test]
+    fn test_project_list_json_root_differs_from_cwd_in_nested_recursive() {
+        // Regression: when invoked from a child directory with --recursive,
+        // `root` must point to the outermost workspace root, NOT to cwd.
+        let temp_dir = TempDir::new().unwrap();
+        let child = temp_dir.path().join("child");
+        std::fs::create_dir_all(&child).unwrap();
+
+        // Root .meta
+        std::fs::write(
+            temp_dir.path().join(".meta"),
+            r#"{"projects": {"child": {"repo": "git@github.com:org/child.git", "meta": true}}}"#,
+        )
+        .unwrap();
+
+        // Child .meta
+        std::fs::write(
+            child.join(".meta"),
+            r#"{"projects": {"repo1": "git@github.com:org/repo1.git"}}"#,
+        )
+        .unwrap();
+
+        let options = ExecuteOptions {
+            recursive: true,
+            json_output: true,
+            ..Default::default()
+        };
+        // Run from child (nested) directory
+        let result = execute_command("project list", &[], &options, &[], &child);
+
+        match result {
+            CommandResult::Message(msg) => {
+                let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+                let cwd = parsed["cwd"].as_str().expect("cwd field should be a string");
+                let root = parsed["root"]
+                    .as_str()
+                    .expect("root field should be a string");
+                assert!(
+                    std::path::Path::new(root).is_absolute(),
+                    "root should be absolute, got: {root}"
+                );
+                // root must be the outermost workspace root, which is the parent of child
+                assert_ne!(
+                    root, cwd,
+                    "root should differ from cwd when invoked from a nested meta workspace"
+                );
             }
             _ => panic!("Expected Message result"),
         }
