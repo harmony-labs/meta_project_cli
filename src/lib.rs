@@ -47,6 +47,7 @@ pub struct ProjectTreeNode {
 pub struct ProjectListOutput {
     pub path: String,
     pub repo: String,
+    pub root: String,
     pub cwd: String,
     pub projects: Vec<ProjectTreeNode>,
 }
@@ -225,9 +226,15 @@ fn handle_project_list(cwd: &Path, options: &ExecuteOptions) -> CommandResult {
         .to_string();
 
     if options.json_output {
+        let abs_root = start_dir
+            .canonicalize()
+            .unwrap_or_else(|_| start_dir.clone())
+            .to_string_lossy()
+            .to_string();
         let output = ProjectListOutput {
             path: ".".to_string(),
             repo: root_repo,
+            root: abs_root,
             cwd: abs_cwd,
             projects: project_nodes,
         };
