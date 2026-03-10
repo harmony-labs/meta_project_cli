@@ -240,7 +240,7 @@ fn handle_project_list(cwd: &Path, options: &ExecuteOptions) -> CommandResult {
         };
         let abs_root = root_dir
             .canonicalize()
-            .unwrap_or_else(|_| root_dir)
+            .unwrap_or(root_dir)
             .to_string_lossy()
             .to_string();
         let output = ProjectListOutput {
