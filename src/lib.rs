@@ -47,6 +47,7 @@ pub struct ProjectTreeNode {
 pub struct ProjectListOutput {
     pub path: String,
     pub repo: String,
+    pub root: String,
     pub cwd: String,
     pub projects: Vec<ProjectTreeNode>,
 }
@@ -225,9 +226,27 @@ fn handle_project_list(cwd: &Path, options: &ExecuteOptions) -> CommandResult {
         .to_string();
 
     if options.json_output {
+        // `root` = the .meta config directory relevant to this invocation:
+        //   - recursive: the outermost workspace root (same as start_dir)
+        //   - non-recursive: the nearest ancestor .meta config dir
+        // In both cases start_dir is wrong for non-recursive (it equals cwd).
+        let root_dir = if options.recursive {
+            start_dir.clone()
+        } else {
+            match config::find_meta_config(cwd, None) {
+                Some((config_path, _)) => config_path.parent().unwrap_or(cwd).to_path_buf(),
+                None => start_dir.clone(),
+            }
+        };
+        let abs_root = root_dir
+            .canonicalize()
+            .unwrap_or(root_dir)
+            .to_string_lossy()
+            .to_string();
         let output = ProjectListOutput {
             path: ".".to_string(),
             repo: root_repo,
+            root: abs_root,
             cwd: abs_cwd,
             projects: project_nodes,
         };
@@ -638,6 +657,67 @@ mod tests {
                 assert!(
                     std::path::Path::new(cwd).is_absolute(),
                     "cwd should be absolute, got: {cwd}"
+                );
+                // root field should be present and be an absolute path
+                let root = parsed["root"]
+                    .as_str()
+                    .expect("root field should be a string");
+                assert!(
+                    std::path::Path::new(root).is_absolute(),
+                    "root should be absolute, got: {root}"
+                );
+            }
+            _ => panic!("Expected Message result"),
+        }
+    }
+
+    #[test]
+    fn test_project_list_json_root_differs_from_cwd_in_nested_recursive() {
+        // Regression: when invoked from a child directory with --recursive,
+        // `root` must point to the outermost workspace root, NOT to cwd.
+        let temp_dir = TempDir::new().unwrap();
+        let child = temp_dir.path().join("child");
+        std::fs::create_dir_all(&child).unwrap();
+
+        // Root .meta
+        std::fs::write(
+            temp_dir.path().join(".meta"),
+            r#"{"projects": {"child": {"repo": "git@github.com:org/child.git", "meta": true}}}"#,
+        )
+        .unwrap();
+
+        // Child .meta
+        std::fs::write(
+            child.join(".meta"),
+            r#"{"projects": {"repo1": "git@github.com:org/repo1.git"}}"#,
+        )
+        .unwrap();
+
+        let options = ExecuteOptions {
+            recursive: true,
+            json_output: true,
+            ..Default::default()
+        };
+        // Run from child (nested) directory
+        let result = execute_command("project list", &[], &options, &[], &child);
+
+        match result {
+            CommandResult::Message(msg) => {
+                let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+                let cwd = parsed["cwd"]
+                    .as_str()
+                    .expect("cwd field should be a string");
+                let root = parsed["root"]
+                    .as_str()
+                    .expect("root field should be a string");
+                assert!(
+                    std::path::Path::new(root).is_absolute(),
+                    "root should be absolute, got: {root}"
+                );
+                // root must be the outermost workspace root, which is the parent of child
+                assert_ne!(
+                    root, cwd,
+                    "root should differ from cwd when invoked from a nested meta workspace"
                 );
             }
             _ => panic!("Expected Message result"),
