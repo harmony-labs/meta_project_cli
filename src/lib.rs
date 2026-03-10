@@ -234,10 +234,7 @@ fn handle_project_list(cwd: &Path, options: &ExecuteOptions) -> CommandResult {
             start_dir.clone()
         } else {
             match config::find_meta_config(cwd, None) {
-                Some((config_path, _)) => config_path
-                    .parent()
-                    .unwrap_or(cwd)
-                    .to_path_buf(),
+                Some((config_path, _)) => config_path.parent().unwrap_or(cwd).to_path_buf(),
                 None => start_dir.clone(),
             }
         };
