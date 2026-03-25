@@ -402,19 +402,29 @@ fn handle_project_dependents(
     }
 }
 
+/// Normalize a dependency token for case- and separator-insensitive matching.
+///
+/// Folds hyphens to underscores and lowercases the string so that
+/// `loop-lib`, `loop_lib`, and `Loop_Lib` all resolve to the same token.
+fn normalize_token(s: &str) -> String {
+    s.replace('-', "_").to_lowercase()
+}
+
 /// Find all projects that depend on the given project.
 ///
 /// A project B depends on project A if B's `depends_on` contains:
 /// - A's name directly, OR
 /// - Any of A's `provides` entries
+///
+/// Token matching is normalized (hyphens ↔ underscores, case-insensitive).
 fn find_dependents(project_name: &str, all_projects: &[ProjectInfo]) -> Vec<String> {
-    // Build the set of tokens that `project_name` provides
-    let mut provided_tokens: HashSet<&str> = HashSet::new();
-    provided_tokens.insert(project_name);
+    // Build the set of normalized tokens that `project_name` provides
+    let mut provided_tokens: HashSet<String> = HashSet::new();
+    provided_tokens.insert(normalize_token(project_name));
     for project in all_projects {
         if project.name == project_name {
             for token in &project.provides {
-                provided_tokens.insert(token.as_str());
+                provided_tokens.insert(normalize_token(token));
             }
         }
     }
@@ -426,7 +436,7 @@ fn find_dependents(project_name: &str, all_projects: &[ProjectInfo]) -> Vec<Stri
         .filter(|p| {
             p.depends_on
                 .iter()
-                .any(|dep| provided_tokens.contains(dep.as_str()))
+                .any(|dep| provided_tokens.contains(&normalize_token(dep)))
         })
         .map(|p| p.name.clone())
         .collect();
@@ -965,6 +975,20 @@ mod tests {
         assert_eq!(
             find_dependents("loop_lib", &projects),
             vec!["meta_cli", "meta_git_cli"]
+        );
+    }
+
+    #[test]
+    fn test_find_dependents_normalized_tokens() {
+        // depends_on uses underscore, provides uses hyphen — should still match
+        let projects = vec![
+            make_project("loop_lib", &["loop-lib"], &[]),
+            make_project("consumer_a", &[], &["loop_lib"]),
+            make_project("consumer_b", &[], &["Loop-Lib"]),
+        ];
+        assert_eq!(
+            find_dependents("loop_lib", &projects),
+            vec!["consumer_a", "consumer_b"]
         );
     }
 
