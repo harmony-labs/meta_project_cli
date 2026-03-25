@@ -999,6 +999,21 @@ mod tests {
     }
 
     #[test]
+    fn test_find_dependents_by_alias_query() {
+        // Querying by a provides alias should resolve the target and find all dependents
+        let projects = vec![
+            make_project("loop_lib", &["loop-lib"], &[]),
+            make_project("meta_cli", &[], &["loop-lib"]),
+            make_project("meta_git_cli", &[], &["loop_lib"]),
+        ];
+        // Query by alias "loop-lib" should find the target "loop_lib" and collect all dependents
+        assert_eq!(
+            find_dependents("loop-lib", &projects),
+            vec!["meta_cli", "meta_git_cli"]
+        );
+    }
+
+    #[test]
     fn test_find_dependents_no_match() {
         let projects = vec![make_project("a", &[], &[]), make_project("b", &[], &[])];
         assert!(find_dependents("a", &projects).is_empty());
@@ -1041,6 +1056,45 @@ projects:
         match result {
             CommandResult::Message(msg) => {
                 assert_eq!(msg.trim(), "meta_cli");
+            }
+            _ => panic!("Expected Message result"),
+        }
+    }
+
+    #[test]
+    fn test_project_dependents_from_subdirectory() {
+        // T8: running from a subdirectory should climb to the nearest .meta ancestor
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(
+            temp_dir.path().join(".meta.yaml"),
+            r#"
+projects:
+  lib_a:
+    repo: git@github.com:org/lib_a.git
+    provides: [lib-a]
+  app_b:
+    repo: git@github.com:org/app_b.git
+    depends_on: [lib-a]
+"#,
+        )
+        .unwrap();
+
+        // Create a subdirectory to invoke from
+        let sub_dir = temp_dir.path().join("lib_a");
+        std::fs::create_dir(&sub_dir).unwrap();
+
+        let options = ExecuteOptions::default();
+        let result = execute_command(
+            "project dependents",
+            &["lib_a".to_string()],
+            &options,
+            &[],
+            &sub_dir,
+        );
+
+        match result {
+            CommandResult::Message(msg) => {
+                assert_eq!(msg.trim(), "app_b");
             }
             _ => panic!("Expected Message result"),
         }
