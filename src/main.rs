@@ -16,6 +16,10 @@ fn main() {
         "check".to_string(),
         "Verify all projects are cloned and consistent".to_string(),
     );
+    help_commands.insert(
+        "dependents".to_string(),
+        "List projects that depend on a given project".to_string(),
+    );
 
     run_plugin(PluginDefinition {
         info: PluginInfo {
@@ -25,6 +29,7 @@ fn main() {
                 "project list".to_string(),
                 "project ls".to_string(),
                 "project check".to_string(),
+                "project dependents".to_string(),
             ],
             description: Some("Project inspection for meta repositories".to_string()),
             help: Some(PluginHelp {
