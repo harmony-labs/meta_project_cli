@@ -2,9 +2,9 @@
 //!
 //! Provides project management commands for meta repositories.
 
-use meta_cli::config::{self, MetaTreeNode};
+use meta_cli::config::{self, MetaTreeNode, ProjectInfo};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
 
@@ -70,6 +70,11 @@ pub fn execute_command(
     // Intercept --help/-h before dispatching to subcommand handlers
     if args.iter().any(|a| a == "--help" || a == "-h") {
         return CommandResult::ShowHelp(None);
+    }
+
+    // project dependents reads the dependency graph directly
+    if command == "project dependents" {
+        return handle_project_dependents(args, options, cwd);
     }
 
     // project list/ls handles its own config discovery
@@ -325,6 +330,151 @@ fn format_project_tree(nodes: &[ProjectTreeNode], output: &mut String, prefix: &
 }
 
 // ============================================================================
+// Project Dependents
+// ============================================================================
+
+/// Handle `meta project dependents <name>`
+///
+/// Finds all projects that directly depend on the given project (via `depends_on`
+/// matching the project's name or any of its `provides` entries).
+fn handle_project_dependents(
+    args: &[String],
+    options: &ExecuteOptions,
+    cwd: &Path,
+) -> CommandResult {
+    // Check if --json was passed as a trailing arg (not extracted by meta_cli)
+    let json_from_args = args.iter().any(|a| a == "--json");
+    let effective_options = if json_from_args && !options.json_output {
+        ExecuteOptions {
+            json_output: true,
+            ..*options
+        }
+    } else {
+        ExecuteOptions { ..*options }
+    };
+    let options = &effective_options;
+
+    let mut positionals = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--json" | "--recursive" | "-r" | "--verbose" | "--parallel" => {}
+            "--depth" => {
+                iter.next();
+            }
+            _ if arg.starts_with("--depth=") => {}
+            _ if !arg.starts_with('-') => positionals.push(arg),
+            _ => {}
+        }
+    }
+
+    let project_name = match positionals.as_slice() {
+        [name] => (*name).clone(),
+        [] => {
+            return CommandResult::ShowHelp(Some(
+                "Usage: meta project dependents <project-name>".to_string(),
+            ))
+        }
+        _ => {
+            return CommandResult::Error(
+                "Expected exactly one <project-name> argument.".to_string(),
+            )
+        }
+    };
+
+    // Find the root meta config
+    let Some((nearest_meta_path, _)) = config::find_meta_config(cwd, None) else {
+        return CommandResult::Error(format!("No .meta config found in {}", cwd.display()));
+    };
+    let nearest_meta_dir = nearest_meta_path.parent().unwrap_or(Path::new("."));
+    let start_dir = if options.recursive {
+        config::find_root_meta_dir(nearest_meta_dir)
+    } else {
+        nearest_meta_dir.to_path_buf()
+    };
+
+    let Some((meta_path, _format)) = config::find_meta_config_in(&start_dir) else {
+        return CommandResult::Error(format!("No .meta config found in {}", start_dir.display()));
+    };
+
+    let (all_projects, _ignore) = match config::parse_meta_config(&meta_path) {
+        Ok(result) => result,
+        Err(e) => return CommandResult::Error(format!("Failed to parse meta config: {e}")),
+    };
+
+    let Some(dependents) = find_dependents(&project_name, &all_projects) else {
+        return CommandResult::Error(format!("Unknown project or alias: {project_name}"));
+    };
+
+    if options.json_output {
+        let json = match serde_json::to_string(&dependents) {
+            Ok(j) => j,
+            Err(e) => return CommandResult::Error(format!("Failed to serialize JSON: {e}")),
+        };
+        CommandResult::Message(json)
+    } else {
+        if dependents.is_empty() {
+            CommandResult::Message(format!("No projects depend on '{project_name}'."))
+        } else {
+            CommandResult::Message(dependents.join("\n"))
+        }
+    }
+}
+
+/// Normalize a dependency token for case- and separator-insensitive matching.
+///
+/// Folds hyphens to underscores and lowercases the string so that
+/// `loop-lib`, `loop_lib`, and `Loop_Lib` all resolve to the same token.
+fn normalize_token(s: &str) -> String {
+    s.replace('-', "_").to_lowercase()
+}
+
+/// Find all projects that depend on the given project.
+///
+/// A project B depends on project A if B's `depends_on` contains:
+/// - A's name directly, OR
+/// - Any of A's `provides` entries
+///
+/// Token matching is normalized (hyphens ↔ underscores, case-insensitive).
+fn find_dependents(project_name: &str, all_projects: &[ProjectInfo]) -> Option<Vec<String>> {
+    // Resolve the target project by normalized name or alias
+    let normalized_query = normalize_token(project_name);
+    let target = all_projects
+        .iter()
+        .find(|project| normalize_token(&project.name) == normalized_query)
+        .or_else(|| {
+            all_projects.iter().find(|project| {
+                project
+                    .provides
+                    .iter()
+                    .any(|token| normalize_token(token) == normalized_query)
+            })
+        })?;
+
+    // Build the set of normalized tokens that the target provides
+    let mut provided_tokens: HashSet<String> = HashSet::new();
+    provided_tokens.insert(normalize_token(&target.name));
+    for token in &target.provides {
+        provided_tokens.insert(normalize_token(token));
+    }
+
+    // Find all projects whose depends_on intersects with provided_tokens
+    let mut dependents: Vec<String> = all_projects
+        .iter()
+        .filter(|p| p.name != target.name)
+        .filter(|p| {
+            p.depends_on
+                .iter()
+                .any(|dep| provided_tokens.contains(&normalize_token(dep)))
+        })
+        .map(|p| p.name.clone())
+        .collect();
+
+    dependents.sort();
+    Some(dependents)
+}
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
@@ -333,13 +483,18 @@ pub fn get_help_text() -> &'static str {
     r#"meta project - Project Inspection Plugin
 
 Commands:
-  meta project list    List all projects defined in .meta (alias: ls)
-  meta project check   Check if all projects in .meta are cloned locally
+  meta project list         List all projects defined in .meta (alias: ls)
+  meta project check        Check if all projects in .meta are cloned locally
+  meta project dependents   List projects that depend on a given project
 
 Options for list:
   --json               Output as JSON
   --recursive, -r      Include nested meta repo children
   --depth N            Maximum recursion depth (default: unlimited)
+
+Examples:
+  meta project dependents meta_git_lib          # Who depends on meta_git_lib?
+  meta project dependents meta_git_lib --json   # JSON output
 
 To clone missing projects, use: meta git update
 "#
@@ -810,6 +965,364 @@ mod tests {
                 assert_eq!(projects[0]["name"], "grandchild");
             }
             _ => panic!("Expected Message result"),
+        }
+    }
+
+    // ── find_dependents ────────────────────────────────────────
+
+    fn make_project(name: &str, provides: &[&str], depends_on: &[&str]) -> ProjectInfo {
+        ProjectInfo {
+            name: name.to_string(),
+            path: name.to_string(),
+            repo: Some(format!("git@github.com:org/{name}.git")),
+            tags: vec![],
+            provides: provides.iter().map(|s| s.to_string()).collect(),
+            depends_on: depends_on.iter().map(|s| s.to_string()).collect(),
+            meta: false,
+        }
+    }
+
+    #[test]
+    fn test_find_dependents_by_name() {
+        let projects = vec![
+            make_project("a", &[], &[]),
+            make_project("b", &[], &["a"]),
+            make_project("c", &[], &["b"]),
+        ];
+        assert_eq!(find_dependents("a", &projects), Some(vec!["b".to_string()]));
+        assert_eq!(find_dependents("b", &projects), Some(vec!["c".to_string()]));
+        assert_eq!(find_dependents("c", &projects), Some(vec![]));
+    }
+
+    #[test]
+    fn test_find_dependents_by_provides() {
+        let projects = vec![
+            make_project("loop_lib", &["loop-lib"], &[]),
+            make_project("meta_cli", &[], &["loop-lib"]),
+            make_project("meta_git_cli", &[], &["loop-lib"]),
+        ];
+        assert_eq!(
+            find_dependents("loop_lib", &projects),
+            Some(vec!["meta_cli".to_string(), "meta_git_cli".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_find_dependents_normalized_tokens() {
+        // depends_on uses underscore, provides uses hyphen — should still match
+        let projects = vec![
+            make_project("loop_lib", &["loop-lib"], &[]),
+            make_project("consumer_a", &[], &["loop_lib"]),
+            make_project("consumer_b", &[], &["Loop-Lib"]),
+        ];
+        assert_eq!(
+            find_dependents("loop_lib", &projects),
+            Some(vec!["consumer_a".to_string(), "consumer_b".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_find_dependents_by_alias_query() {
+        // Querying by a provides alias should resolve the target and find all dependents
+        let projects = vec![
+            make_project("loop_lib", &["loop-lib"], &[]),
+            make_project("meta_cli", &[], &["loop-lib"]),
+            make_project("meta_git_cli", &[], &["loop_lib"]),
+        ];
+        // Query by alias "loop-lib" should find the target "loop_lib" and collect all dependents
+        assert_eq!(
+            find_dependents("loop-lib", &projects),
+            Some(vec!["meta_cli".to_string(), "meta_git_cli".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_find_dependents_exact_name_before_alias() {
+        // T10: If one project merely provides `util` and another is named `util`,
+        // the exact name match should win regardless of iteration order.
+        let projects = vec![
+            make_project("provider", &["util"], &[]),
+            make_project("util", &[], &[]),
+            make_project("consumer", &[], &["util"]),
+        ];
+        // Querying "util" should resolve to the project *named* "util", not "provider"
+        let deps = find_dependents("util", &projects).unwrap();
+        assert_eq!(deps, vec!["consumer"]);
+        // "provider" should NOT appear as a dependent
+        assert!(!deps.contains(&"provider".to_string()));
+    }
+
+    #[test]
+    fn test_find_dependents_no_match() {
+        let projects = vec![make_project("a", &[], &[]), make_project("b", &[], &[])];
+        assert_eq!(find_dependents("a", &projects), Some(vec![]));
+    }
+
+    #[test]
+    fn test_find_dependents_unknown_project() {
+        let projects = vec![make_project("a", &[], &[])];
+        assert_eq!(find_dependents("nonexistent", &projects), None);
+    }
+
+    #[test]
+    fn test_project_dependents_command() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(
+            temp_dir.path().join(".meta.yaml"),
+            r#"
+projects:
+  loop_lib:
+    repo: git@github.com:org/loop_lib.git
+    provides: [loop-lib]
+  meta_cli:
+    repo: git@github.com:org/meta_cli.git
+    depends_on: [loop-lib]
+  other:
+    repo: git@github.com:org/other.git
+"#,
+        )
+        .unwrap();
+
+        let options = ExecuteOptions::default();
+        let result = execute_command(
+            "project dependents",
+            &["loop_lib".to_string()],
+            &options,
+            &[],
+            temp_dir.path(),
+        );
+
+        match result {
+            CommandResult::Message(msg) => {
+                assert_eq!(msg.trim(), "meta_cli");
+            }
+            _ => panic!("Expected Message result"),
+        }
+    }
+
+    #[test]
+    fn test_project_dependents_from_subdirectory() {
+        // T8: running from a subdirectory should climb to the nearest .meta ancestor
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(
+            temp_dir.path().join(".meta.yaml"),
+            r#"
+projects:
+  lib_a:
+    repo: git@github.com:org/lib_a.git
+    provides: [lib-a]
+  app_b:
+    repo: git@github.com:org/app_b.git
+    depends_on: [lib-a]
+"#,
+        )
+        .unwrap();
+
+        // Create a subdirectory to invoke from
+        let sub_dir = temp_dir.path().join("lib_a");
+        std::fs::create_dir(&sub_dir).unwrap();
+
+        let options = ExecuteOptions::default();
+        let result = execute_command(
+            "project dependents",
+            &["lib_a".to_string()],
+            &options,
+            &[],
+            &sub_dir,
+        );
+
+        match result {
+            CommandResult::Message(msg) => {
+                assert_eq!(msg.trim(), "app_b");
+            }
+            _ => panic!("Expected Message result"),
+        }
+    }
+
+    #[test]
+    fn test_project_dependents_json() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(
+            temp_dir.path().join(".meta.yaml"),
+            r#"
+projects:
+  a:
+    repo: git@github.com:org/a.git
+    provides: [lib-a]
+  b:
+    repo: git@github.com:org/b.git
+    depends_on: [lib-a]
+  c:
+    repo: git@github.com:org/c.git
+    depends_on: [lib-a]
+"#,
+        )
+        .unwrap();
+
+        let options = ExecuteOptions {
+            json_output: true,
+            ..Default::default()
+        };
+        let result = execute_command(
+            "project dependents",
+            &["a".to_string()],
+            &options,
+            &[],
+            temp_dir.path(),
+        );
+
+        match result {
+            CommandResult::Message(msg) => {
+                let parsed: Vec<String> = serde_json::from_str(&msg).unwrap();
+                assert_eq!(parsed, vec!["b", "c"]);
+            }
+            _ => panic!("Expected Message result"),
+        }
+    }
+
+    #[test]
+    fn test_project_dependents_json_flag_in_args() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(
+            temp_dir.path().join(".meta.yaml"),
+            r#"
+projects:
+  a:
+    repo: git@github.com:org/a.git
+  b:
+    repo: git@github.com:org/b.git
+    depends_on: [a]
+"#,
+        )
+        .unwrap();
+
+        for args in [
+            vec!["a".to_string(), "--json".to_string()],
+            vec!["--json".to_string(), "a".to_string()],
+        ] {
+            let result = execute_command(
+                "project dependents",
+                &args,
+                &ExecuteOptions::default(),
+                &[],
+                temp_dir.path(),
+            );
+
+            match result {
+                CommandResult::Message(msg) => {
+                    let parsed: Vec<String> = serde_json::from_str(&msg).unwrap();
+                    assert_eq!(parsed, vec!["b"]);
+                }
+                _ => panic!("Expected Message result for args: {args:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_project_dependents_depth_flag_skipped() {
+        // T12: --depth N should not be treated as a positional arg
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(
+            temp_dir.path().join(".meta.yaml"),
+            r#"
+projects:
+  lib_a:
+    repo: git@github.com:org/lib_a.git
+  app_b:
+    repo: git@github.com:org/app_b.git
+    depends_on: [lib_a]
+"#,
+        )
+        .unwrap();
+
+        // --depth 1 lib_a: "1" should NOT be picked as project name
+        let result = execute_command(
+            "project dependents",
+            &["--depth".to_string(), "1".to_string(), "lib_a".to_string()],
+            &ExecuteOptions::default(),
+            &[],
+            temp_dir.path(),
+        );
+        match result {
+            CommandResult::Message(msg) => assert_eq!(msg.trim(), "app_b"),
+            _ => panic!("Expected Message result"),
+        }
+
+        // --depth=1 lib_a variant
+        let result = execute_command(
+            "project dependents",
+            &["--depth=1".to_string(), "lib_a".to_string()],
+            &ExecuteOptions::default(),
+            &[],
+            temp_dir.path(),
+        );
+        match result {
+            CommandResult::Message(msg) => assert_eq!(msg.trim(), "app_b"),
+            _ => panic!("Expected Message result"),
+        }
+    }
+
+    #[test]
+    fn test_project_dependents_multiple_positionals_error() {
+        // T12: multiple positional args should error
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(
+            temp_dir.path().join(".meta.yaml"),
+            r#"
+projects:
+  a:
+    repo: git@github.com:org/a.git
+"#,
+        )
+        .unwrap();
+
+        let result = execute_command(
+            "project dependents",
+            &["a".to_string(), "b".to_string()],
+            &ExecuteOptions::default(),
+            &[],
+            temp_dir.path(),
+        );
+        match result {
+            CommandResult::Error(msg) => {
+                assert!(
+                    msg.contains("exactly one"),
+                    "Expected 'exactly one' error, got: {msg}"
+                );
+            }
+            _ => panic!("Expected Error result"),
+        }
+    }
+
+    #[test]
+    fn test_project_dependents_unknown_project_error() {
+        // T13: querying a nonexistent project name should error, not say "no dependents"
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(
+            temp_dir.path().join(".meta.yaml"),
+            r#"
+projects:
+  a:
+    repo: git@github.com:org/a.git
+"#,
+        )
+        .unwrap();
+
+        let result = execute_command(
+            "project dependents",
+            &["nonexistent".to_string()],
+            &ExecuteOptions::default(),
+            &[],
+            temp_dir.path(),
+        );
+        match result {
+            CommandResult::Error(msg) => {
+                assert!(
+                    msg.contains("Unknown project or alias"),
+                    "Expected unknown project error, got: {msg}"
+                );
+            }
+            _ => panic!("Expected Error result"),
         }
     }
 }
