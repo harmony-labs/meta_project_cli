@@ -342,7 +342,19 @@ fn handle_project_dependents(
     options: &ExecuteOptions,
     cwd: &Path,
 ) -> CommandResult {
-    let project_name = match args.first() {
+    // Check if --json was passed as a trailing arg (not extracted by meta_cli)
+    let json_from_args = args.iter().any(|a| a == "--json");
+    let effective_options = if json_from_args && !options.json_output {
+        ExecuteOptions {
+            json_output: true,
+            ..*options
+        }
+    } else {
+        ExecuteOptions { ..*options }
+    };
+    let options = &effective_options;
+
+    let project_name = match args.iter().find(|a| !a.starts_with('-')) {
         Some(name) => name.clone(),
         None => {
             return CommandResult::ShowHelp(Some(
@@ -376,7 +388,7 @@ fn handle_project_dependents(
     let dependents = find_dependents(&project_name, &all_projects);
 
     if options.json_output {
-        let json = match serde_json::to_string_pretty(&dependents) {
+        let json = match serde_json::to_string(&dependents) {
             Ok(j) => j,
             Err(e) => return CommandResult::Error(format!("Failed to serialize JSON: {e}")),
         };
