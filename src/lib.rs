@@ -364,16 +364,14 @@ fn handle_project_dependents(
     };
 
     // Find the root meta config
+    let Some((nearest_meta_path, _)) = config::find_meta_config(cwd, None) else {
+        return CommandResult::Error(format!("No .meta config found in {}", cwd.display()));
+    };
+    let nearest_meta_dir = nearest_meta_path.parent().unwrap_or(Path::new("."));
     let start_dir = if options.recursive {
-        match config::find_meta_config(cwd, None) {
-            Some((config_path, _)) => {
-                let nearest = config_path.parent().unwrap_or(Path::new(".")).to_path_buf();
-                config::find_root_meta_dir(&nearest)
-            }
-            None => cwd.to_path_buf(),
-        }
+        config::find_root_meta_dir(nearest_meta_dir)
     } else {
-        cwd.to_path_buf()
+        nearest_meta_dir.to_path_buf()
     };
 
     let Some((meta_path, _format)) = config::find_meta_config_in(&start_dir) else {
@@ -418,21 +416,29 @@ fn normalize_token(s: &str) -> String {
 ///
 /// Token matching is normalized (hyphens ↔ underscores, case-insensitive).
 fn find_dependents(project_name: &str, all_projects: &[ProjectInfo]) -> Vec<String> {
-    // Build the set of normalized tokens that `project_name` provides
+    // Resolve the target project by normalized name or alias
+    let normalized_query = normalize_token(project_name);
+    let Some(target) = all_projects.iter().find(|project| {
+        normalize_token(&project.name) == normalized_query
+            || project
+                .provides
+                .iter()
+                .any(|token| normalize_token(token) == normalized_query)
+    }) else {
+        return Vec::new();
+    };
+
+    // Build the set of normalized tokens that the target provides
     let mut provided_tokens: HashSet<String> = HashSet::new();
-    provided_tokens.insert(normalize_token(project_name));
-    for project in all_projects {
-        if project.name == project_name {
-            for token in &project.provides {
-                provided_tokens.insert(normalize_token(token));
-            }
-        }
+    provided_tokens.insert(normalize_token(&target.name));
+    for token in &target.provides {
+        provided_tokens.insert(normalize_token(token));
     }
 
     // Find all projects whose depends_on intersects with provided_tokens
     let mut dependents: Vec<String> = all_projects
         .iter()
-        .filter(|p| p.name != project_name)
+        .filter(|p| p.name != target.name)
         .filter(|p| {
             p.depends_on
                 .iter()
