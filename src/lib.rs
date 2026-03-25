@@ -354,12 +354,31 @@ fn handle_project_dependents(
     };
     let options = &effective_options;
 
-    let project_name = match args.iter().find(|a| !a.starts_with('-')) {
-        Some(name) => name.clone(),
-        None => {
+    let mut positionals = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--json" | "--recursive" | "-r" | "--verbose" | "--parallel" => {}
+            "--depth" => {
+                iter.next();
+            }
+            _ if arg.starts_with("--depth=") => {}
+            _ if !arg.starts_with('-') => positionals.push(arg),
+            _ => {}
+        }
+    }
+
+    let project_name = match positionals.as_slice() {
+        [name] => (*name).clone(),
+        [] => {
             return CommandResult::ShowHelp(Some(
                 "Usage: meta project dependents <project-name>".to_string(),
             ))
+        }
+        _ => {
+            return CommandResult::Error(
+                "Expected exactly one <project-name> argument.".to_string(),
+            )
         }
     };
 
@@ -383,7 +402,9 @@ fn handle_project_dependents(
         Err(e) => return CommandResult::Error(format!("Failed to parse meta config: {e}")),
     };
 
-    let dependents = find_dependents(&project_name, &all_projects);
+    let Some(dependents) = find_dependents(&project_name, &all_projects) else {
+        return CommandResult::Error(format!("Unknown project or alias: {project_name}"));
+    };
 
     if options.json_output {
         let json = match serde_json::to_string(&dependents) {
@@ -415,10 +436,10 @@ fn normalize_token(s: &str) -> String {
 /// - Any of A's `provides` entries
 ///
 /// Token matching is normalized (hyphens ↔ underscores, case-insensitive).
-fn find_dependents(project_name: &str, all_projects: &[ProjectInfo]) -> Vec<String> {
+fn find_dependents(project_name: &str, all_projects: &[ProjectInfo]) -> Option<Vec<String>> {
     // Resolve the target project by normalized name or alias
     let normalized_query = normalize_token(project_name);
-    let Some(target) = all_projects
+    let target = all_projects
         .iter()
         .find(|project| normalize_token(&project.name) == normalized_query)
         .or_else(|| {
@@ -428,10 +449,7 @@ fn find_dependents(project_name: &str, all_projects: &[ProjectInfo]) -> Vec<Stri
                     .iter()
                     .any(|token| normalize_token(token) == normalized_query)
             })
-        })
-    else {
-        return Vec::new();
-    };
+        })?;
 
     // Build the set of normalized tokens that the target provides
     let mut provided_tokens: HashSet<String> = HashSet::new();
@@ -453,7 +471,7 @@ fn find_dependents(project_name: &str, all_projects: &[ProjectInfo]) -> Vec<Stri
         .collect();
 
     dependents.sort();
-    dependents
+    Some(dependents)
 }
 
 // ============================================================================
@@ -971,9 +989,9 @@ mod tests {
             make_project("b", &[], &["a"]),
             make_project("c", &[], &["b"]),
         ];
-        assert_eq!(find_dependents("a", &projects), vec!["b"]);
-        assert_eq!(find_dependents("b", &projects), vec!["c"]);
-        assert!(find_dependents("c", &projects).is_empty());
+        assert_eq!(find_dependents("a", &projects), Some(vec!["b".to_string()]));
+        assert_eq!(find_dependents("b", &projects), Some(vec!["c".to_string()]));
+        assert_eq!(find_dependents("c", &projects), Some(vec![]));
     }
 
     #[test]
@@ -985,7 +1003,7 @@ mod tests {
         ];
         assert_eq!(
             find_dependents("loop_lib", &projects),
-            vec!["meta_cli", "meta_git_cli"]
+            Some(vec!["meta_cli".to_string(), "meta_git_cli".to_string()])
         );
     }
 
@@ -999,7 +1017,7 @@ mod tests {
         ];
         assert_eq!(
             find_dependents("loop_lib", &projects),
-            vec!["consumer_a", "consumer_b"]
+            Some(vec!["consumer_a".to_string(), "consumer_b".to_string()])
         );
     }
 
@@ -1014,7 +1032,7 @@ mod tests {
         // Query by alias "loop-lib" should find the target "loop_lib" and collect all dependents
         assert_eq!(
             find_dependents("loop-lib", &projects),
-            vec!["meta_cli", "meta_git_cli"]
+            Some(vec!["meta_cli".to_string(), "meta_git_cli".to_string()])
         );
     }
 
@@ -1028,7 +1046,7 @@ mod tests {
             make_project("consumer", &[], &["util"]),
         ];
         // Querying "util" should resolve to the project *named* "util", not "provider"
-        let deps = find_dependents("util", &projects);
+        let deps = find_dependents("util", &projects).unwrap();
         assert_eq!(deps, vec!["consumer"]);
         // "provider" should NOT appear as a dependent
         assert!(!deps.contains(&"provider".to_string()));
@@ -1037,13 +1055,13 @@ mod tests {
     #[test]
     fn test_find_dependents_no_match() {
         let projects = vec![make_project("a", &[], &[]), make_project("b", &[], &[])];
-        assert!(find_dependents("a", &projects).is_empty());
+        assert_eq!(find_dependents("a", &projects), Some(vec![]));
     }
 
     #[test]
     fn test_find_dependents_unknown_project() {
         let projects = vec![make_project("a", &[], &[])];
-        assert!(find_dependents("nonexistent", &projects).is_empty());
+        assert_eq!(find_dependents("nonexistent", &projects), None);
     }
 
     #[test]
@@ -1197,6 +1215,112 @@ projects:
                 }
                 _ => panic!("Expected Message result for args: {args:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn test_project_dependents_depth_flag_skipped() {
+        // T12: --depth N should not be treated as a positional arg
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(
+            temp_dir.path().join(".meta.yaml"),
+            r#"
+projects:
+  lib_a:
+    repo: git@github.com:org/lib_a.git
+  app_b:
+    repo: git@github.com:org/app_b.git
+    depends_on: [lib_a]
+"#,
+        )
+        .unwrap();
+
+        // --depth 1 lib_a: "1" should NOT be picked as project name
+        let result = execute_command(
+            "project dependents",
+            &[
+                "--depth".to_string(),
+                "1".to_string(),
+                "lib_a".to_string(),
+            ],
+            &ExecuteOptions::default(),
+            &[],
+            temp_dir.path(),
+        );
+        match result {
+            CommandResult::Message(msg) => assert_eq!(msg.trim(), "app_b"),
+            _ => panic!("Expected Message result"),
+        }
+
+        // --depth=1 lib_a variant
+        let result = execute_command(
+            "project dependents",
+            &["--depth=1".to_string(), "lib_a".to_string()],
+            &ExecuteOptions::default(),
+            &[],
+            temp_dir.path(),
+        );
+        match result {
+            CommandResult::Message(msg) => assert_eq!(msg.trim(), "app_b"),
+            _ => panic!("Expected Message result"),
+        }
+    }
+
+    #[test]
+    fn test_project_dependents_multiple_positionals_error() {
+        // T12: multiple positional args should error
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(
+            temp_dir.path().join(".meta.yaml"),
+            r#"
+projects:
+  a:
+    repo: git@github.com:org/a.git
+"#,
+        )
+        .unwrap();
+
+        let result = execute_command(
+            "project dependents",
+            &["a".to_string(), "b".to_string()],
+            &ExecuteOptions::default(),
+            &[],
+            temp_dir.path(),
+        );
+        match result {
+            CommandResult::Error(msg) => {
+                assert!(msg.contains("exactly one"), "Expected 'exactly one' error, got: {msg}");
+            }
+            _ => panic!("Expected Error result"),
+        }
+    }
+
+    #[test]
+    fn test_project_dependents_unknown_project_error() {
+        // T13: querying a nonexistent project name should error, not say "no dependents"
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(
+            temp_dir.path().join(".meta.yaml"),
+            r#"
+projects:
+  a:
+    repo: git@github.com:org/a.git
+"#,
+        )
+        .unwrap();
+
+        let result = execute_command(
+            "project dependents",
+            &["nonexistent".to_string()],
+            &ExecuteOptions::default(),
+            &[],
+            temp_dir.path(),
+        );
+        match result {
+            CommandResult::Error(msg) => {
+                assert!(msg.contains("Unknown project or alias"), "Expected unknown project error, got: {msg}");
+            }
+            _ => panic!("Expected Error result"),
         }
     }
 }
