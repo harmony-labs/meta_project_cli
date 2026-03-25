@@ -1238,11 +1238,7 @@ projects:
         // --depth 1 lib_a: "1" should NOT be picked as project name
         let result = execute_command(
             "project dependents",
-            &[
-                "--depth".to_string(),
-                "1".to_string(),
-                "lib_a".to_string(),
-            ],
+            &["--depth".to_string(), "1".to_string(), "lib_a".to_string()],
             &ExecuteOptions::default(),
             &[],
             temp_dir.path(),
@@ -1289,7 +1285,10 @@ projects:
         );
         match result {
             CommandResult::Error(msg) => {
-                assert!(msg.contains("exactly one"), "Expected 'exactly one' error, got: {msg}");
+                assert!(
+                    msg.contains("exactly one"),
+                    "Expected 'exactly one' error, got: {msg}"
+                );
             }
             _ => panic!("Expected Error result"),
         }
@@ -1318,7 +1317,10 @@ projects:
         );
         match result {
             CommandResult::Error(msg) => {
-                assert!(msg.contains("Unknown project or alias"), "Expected unknown project error, got: {msg}");
+                assert!(
+                    msg.contains("Unknown project or alias"),
+                    "Expected unknown project error, got: {msg}"
+                );
             }
             _ => panic!("Expected Error result"),
         }
