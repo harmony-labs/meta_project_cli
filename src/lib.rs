@@ -418,13 +418,18 @@ fn normalize_token(s: &str) -> String {
 fn find_dependents(project_name: &str, all_projects: &[ProjectInfo]) -> Vec<String> {
     // Resolve the target project by normalized name or alias
     let normalized_query = normalize_token(project_name);
-    let Some(target) = all_projects.iter().find(|project| {
-        normalize_token(&project.name) == normalized_query
-            || project
-                .provides
-                .iter()
-                .any(|token| normalize_token(token) == normalized_query)
-    }) else {
+    let Some(target) = all_projects
+        .iter()
+        .find(|project| normalize_token(&project.name) == normalized_query)
+        .or_else(|| {
+            all_projects.iter().find(|project| {
+                project
+                    .provides
+                    .iter()
+                    .any(|token| normalize_token(token) == normalized_query)
+            })
+        })
+    else {
         return Vec::new();
     };
 
@@ -1014,6 +1019,22 @@ mod tests {
     }
 
     #[test]
+    fn test_find_dependents_exact_name_before_alias() {
+        // T10: If one project merely provides `util` and another is named `util`,
+        // the exact name match should win regardless of iteration order.
+        let projects = vec![
+            make_project("provider", &["util"], &[]),
+            make_project("util", &[], &[]),
+            make_project("consumer", &[], &["util"]),
+        ];
+        // Querying "util" should resolve to the project *named* "util", not "provider"
+        let deps = find_dependents("util", &projects);
+        assert_eq!(deps, vec!["consumer"]);
+        // "provider" should NOT appear as a dependent
+        assert!(!deps.contains(&"provider".to_string()));
+    }
+
+    #[test]
     fn test_find_dependents_no_match() {
         let projects = vec![make_project("a", &[], &[]), make_project("b", &[], &[])];
         assert!(find_dependents("a", &projects).is_empty());
@@ -1138,6 +1159,44 @@ projects:
                 assert_eq!(parsed, vec!["b", "c"]);
             }
             _ => panic!("Expected Message result"),
+        }
+    }
+
+    #[test]
+    fn test_project_dependents_json_flag_in_args() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(
+            temp_dir.path().join(".meta.yaml"),
+            r#"
+projects:
+  a:
+    repo: git@github.com:org/a.git
+  b:
+    repo: git@github.com:org/b.git
+    depends_on: [a]
+"#,
+        )
+        .unwrap();
+
+        for args in [
+            vec!["a".to_string(), "--json".to_string()],
+            vec!["--json".to_string(), "a".to_string()],
+        ] {
+            let result = execute_command(
+                "project dependents",
+                &args,
+                &ExecuteOptions::default(),
+                &[],
+                temp_dir.path(),
+            );
+
+            match result {
+                CommandResult::Message(msg) => {
+                    let parsed: Vec<String> = serde_json::from_str(&msg).unwrap();
+                    assert_eq!(parsed, vec!["b"]);
+                }
+                _ => panic!("Expected Message result for args: {args:?}"),
+            }
         }
     }
 }
